@@ -1,30 +1,45 @@
-# Use the alpine Node.js 20 image.
-FROM node:20-alpine
+# ---------- base ----------
+FROM node:20-alpine AS base
+WORKDIR /app
 
-# Create and change to the app directory.
-WORKDIR /usr/src/app
+# ---------- deps ----------
+FROM base AS deps
+COPY package*.json ./
+COPY client/package*.json ./client/
+COPY server/package*.json ./server/
+RUN npm ci
+RUN npm --prefix client ci
+RUN npm --prefix server ci
 
-# 5. Copy the rest of the application code
-# This step is much faster than running all npm installs if only code changes.
-COPY . .
+# ---------- build-client ----------
+FROM deps AS client-build
+COPY client ./client
+RUN npm --prefix client run build    # outputs to client/dist
 
-# 2. Install dependencies (Root)
-RUN npm install
+# ---------- build-server ----------
+FROM deps AS server-build
+COPY server ./server
+# if you have a build script to compile TS → JS:
+# e.g. "build": "tsc -p tsconfig.json"
+RUN npm --prefix server run build || true
 
-# 3. Install dependencies (Client)
-# Use a single command to maintain the layer if possible
-RUN cd client && npm install
+# ---------- runtime ----------
+FROM node:20-alpine AS runtime
+WORKDIR /app
 
-# 4. Install dependencies (Server)
-RUN cd server && npm install
+ENV NODE_ENV=production
+# copy server runtime files
+COPY --from=server-build /app/server /app/server
+# copy client build output into a static dir the server will serve
+COPY --from=client-build /app/client/dist /app/server/public
 
-# Change ownership of the app directory to the node non-root user.
-# The 'node' user is usually assigned uid 1000 in official node images.
-RUN chown -R node:node /usr/src/app
+# install ONLY server production deps
+COPY server/package*.json ./server/
+RUN npm --prefix server ci --omit=dev
 
-# Switch to node non-root user.
-USER node
+# non-root
+RUN addgroup -S app && adduser -S app -G app && chown -R app:app /app
+USER app
 
-# If your server uses a different entry point, adjust this:
-# This command runs in the /usr/src/app directory as the 'node' user.
-CMD ["npm", "run", "dev"]
+EXPOSE 3001
+CMD ["npm", "run", "start", "--prefix", "server"]
