@@ -123,23 +123,6 @@ export function blackenAllNearBlackPixels(
   borderThickness = { top: 96, bottom: 400, left: 48, right: 48 }
 ) {
   const imageData = ctx.getImageData(0, 0, width, height);
-  const data = imageData.data;
-
-  for (let y = 0; y < height; y++) {
-    const topEdge = y < borderThickness.top;
-    const botEdge = y >= height - borderThickness.bottom;
-    for (let x = 0; x < width; x++) {
-      const leftEdge = x < borderThickness.left;
-      const rightEdge = x >= width - borderThickness.right;
-      if (!(topEdge || botEdge || leftEdge || rightEdge)) continue;
-
-      const index = (y * width + x) * 4;
-      const r = data[index], g = data[index + 1], b = data[index + 2];
-      if (r < threshold && g < threshold && b < threshold) {
-        data[index] = 0; data[index + 1] = 0; data[index + 2] = 0;
-      }
-    }
-  }
 
   ctx.putImageData(imageData, 0, 0);
 }
