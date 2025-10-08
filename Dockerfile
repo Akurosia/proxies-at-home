@@ -7,9 +7,9 @@ FROM base AS deps
 COPY package*.json ./
 COPY client/package*.json ./client/
 COPY server/package*.json ./server/
-RUN npm ic
-RUN npm --prefix client ic
-RUN npm --prefix server ic
+RUN npm i
+RUN npm --prefix client i
+RUN npm --prefix server i
 
 # ---------- build-client ----------
 FROM deps AS client-build
@@ -35,7 +35,7 @@ COPY --from=client-build /app/client/dist /app/server/public
 
 # install ONLY server production deps
 COPY server/package*.json ./server/
-RUN npm --prefix server ic --omit=dev
+RUN npm --prefix server i --omit=dev
 
 # non-root
 RUN addgroup -S app && adduser -S app -G app && chown -R app:app /app
