@@ -30,6 +30,7 @@ import {
 } from "flowbite-react";
 import { ExternalLink } from "lucide-react";
 import React, { useState } from "react";
+import { uuidv4 } from '@/helpers/uuid';
 
 async function readText(file: File): Promise<string> {
   return new Promise((resolve) => {
@@ -91,7 +92,7 @@ export function UploadSection() {
         inferCardNameFromFilename(file.name) ||
         `Custom Art ${startIndex + i + 1}`,
       imageUrls: [],
-      uuid: crypto.randomUUID(),
+      uuid: uuidv4(),
       isUserUpload: true,
       hasBakedBleed: opts.hasBakedBleed,
     }));
@@ -155,7 +156,7 @@ export function UploadSection() {
       const newCards: CardOption[] = fileArray.map((_, i) => ({
         name: `Custom Art ${startIndex + i + 1}`,
         imageUrls: [],
-        uuid: crypto.randomUUID(),
+        uuid: uuidv4(),
         isUserUpload: true,
         hasBakedBleed: false,
       }));
@@ -207,7 +208,7 @@ export function UploadSection() {
 
       for (const it of items) {
         for (let i = 0; i < (it.qty || 1); i++) {
-          const uuid = crypto.randomUUID();
+          const uuid = uuidv4();
           const name =
             it.name ||
             (it.filename
@@ -300,7 +301,7 @@ export function UploadSection() {
         const card = optionByKey[k] ?? optionByKey[fallbackK];
         return {
           ...(card ?? { name: ci.name, imageUrls: [] }),
-          uuid: crypto.randomUUID(),
+          uuid: uuidv4(),
         } as CardOption;
       });
 
