@@ -1,342 +1,282 @@
-import { useSettingsStore } from "@/store/settings";
-import { useLayoutEffect, useRef } from "react";
-import {
-  MouseSensor,
-  TouchSensor,
-  DndContext,
-  closestCenter,
-  KeyboardSensor,
-  useSensor,
-  useSensors,
-  type DragStartEvent,
-  type DragEndEvent,
-} from "@dnd-kit/core";
-import {
-  arrayMove,
-  SortableContext,
-  sortableKeyboardCoordinates,
-  verticalListSortingStrategy,
-  rectSortingStrategy,
-} from "@dnd-kit/sortable";
-import { SettingsPanel } from "./SettingsPanel/SettingsPanel";
-import { LayoutSection } from "./SettingsPanel/sections/LayoutSection";
-import { BleedSection } from "./SettingsPanel/sections/BleedSection";
-import { GuidesSection } from "./SettingsPanel/sections/GuidesSection";
-import { CardSection } from "./SettingsPanel/sections/CardSection";
-import { FilterSortSection } from "./SettingsPanel/sections/FilterSortSection";
-import { ApplicationSection } from "./SettingsPanel/sections/ApplicationSection";
 import { useImageProcessing } from "@/hooks/useImageProcessing";
-import {
-  Droplet,
-  Filter,
-  Grid3X3,
-  LayoutTemplate,
-  ScanLine,
-  Settings,
-  ChevronsDown,
-  ChevronsUp,
-} from "lucide-react";
-import { AutoTooltip } from "./AutoTooltip";
-import { PullToRefresh } from "./PullToRefresh";
+import { useCardsStore, useSettingsStore } from "@/store";
+import { Button, Checkbox, HelperText, HR, Label, TextInput } from "flowbite-react";
+import { ZoomIn, ZoomOut } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { ExportActions } from "./LayoutSettings/ExportActions";
+import { PageSizeControl } from "./LayoutSettings/PageSizeControl";
 
-import type { CardOption } from "../../../shared/types";
+const INCH_TO_MM = 25.4;
+const CARD_W_IN = 2.5;
+const CARD_H_IN = 3.5;
 
-type PageSettingsControlsProps = {
-  reprocessSelectedImages: ReturnType<
-    typeof useImageProcessing
-  >["reprocessSelectedImages"];
-  cancelProcessing: ReturnType<typeof useImageProcessing>["cancelProcessing"];
-  cards: CardOption[]; // Passed from parent to avoid redundant DB query
-  mobile?: boolean;
-};
+function inToMm(inches: number) {
+  return inches * INCH_TO_MM;
+}
 
-import { useMediaQuery } from "@/hooks/useMediaQuery";
-import { useState } from "react";
+export function PageSettingsControls() {
+  const cards = useCardsStore((state) => state.cards);
 
-// ...
+  const columns = useSettingsStore((state) => state.columns);
+  const rows = useSettingsStore((state) => state.rows);
 
-export function PageSettingsControls({
-  reprocessSelectedImages,
-  cancelProcessing,
-  cards,
-  mobile,
-}: PageSettingsControlsProps) {
-  const settingsPanelState = useSettingsStore((state) => state.settingsPanelState);
-  const setPanelOrder = useSettingsStore((state) => state.setPanelOrder);
-  const togglePanelCollapse = useSettingsStore(
-    (state) => state.togglePanelCollapse
-  );
-  const collapseAllPanels = useSettingsStore((state) => state.collapseAllPanels);
-  const expandAllPanels = useSettingsStore((state) => state.expandAllPanels);
-  const isCollapsed = useSettingsStore((state) => state.isSettingsPanelCollapsed);
-  const toggleSettingsPanel = useSettingsStore((state) => state.toggleSettingsPanel);
+  const bleedEdgeWidth = useSettingsStore((state) => state.bleedEdgeWidth);
+  const bleedEdge = useSettingsStore((state) => state.bleedEdge);
 
-  const isLandscape = useMediaQuery("(orientation: landscape)");
-  const showMobileLandscapeLayout = mobile && isLandscape;
+  const guideColor = useSettingsStore((state) => state.guideColor);
+  const guideWidth = useSettingsStore((state) => state.guideWidth);
+  const zoom = useSettingsStore((state) => state.zoom);
 
-  const scrollPosRef = useRef(0);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const pageWidth = useSettingsStore((s) => s.pageWidth);
+  const pageHeight = useSettingsStore((s) => s.pageHeight);
+  const pageUnit = useSettingsStore((s) => s.pageSizeUnit);
 
-  useLayoutEffect(() => {
-    if (!isCollapsed && scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTop = scrollPosRef.current;
-    }
-  }, [isCollapsed]);
+  const cardSpacingMm = useSettingsStore((s) => s.cardSpacingMm);
 
-  const sensors = useSensors(
-    useSensor(MouseSensor, {
-      activationConstraint: {
-        distance: 8,
-      },
-    }),
-    useSensor(TouchSensor, {
-      activationConstraint: {
-        delay: 200,
-        tolerance: 5,
-      },
-    }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
+  const setColumns = useSettingsStore((state) => state.setColumns);
+  const setRows = useSettingsStore((state) => state.setRows);
+  const setBleedEdgeWidth = useSettingsStore((state) => state.setBleedEdgeWidth);
+  const setBleedEdge = useSettingsStore((state) => state.setBleedEdge);
+  const setGuideColor = useSettingsStore((state) => state.setGuideColor);
+  const setGuideWidth = useSettingsStore((state) => state.setGuideWidth);
+  const setZoom = useSettingsStore((state) => state.setZoom);
+  const resetSettings = useSettingsStore((state) => state.resetSettings);
+  const setCardSpacingMm = useSettingsStore((s) => s.setCardSpacingMm);
+
+  const { reprocessSelectedImages } = useImageProcessing({
+    unit: "mm",
+    bleedEdgeWidth,
+  });
+
+  const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const debouncedReprocess = useCallback(
+    (cards: any[], newBleedWidth: number) => {
+      if (debounceTimeoutRef.current) clearTimeout(debounceTimeoutRef.current);
+      debounceTimeoutRef.current = setTimeout(() => {
+        reprocessSelectedImages(cards, newBleedWidth);
+      }, 500);
+    },
+    [reprocessSelectedImages]
   );
 
-  const [activeId, setActiveId] = useState<string | null>(null);
+  useEffect(() => {
+    return () => {
+      if (debounceTimeoutRef.current) clearTimeout(debounceTimeoutRef.current);
+    };
+  }, []);
 
-  const handleDragStart = (event: DragStartEvent) => {
-    setActiveId(event.active.id as string);
+  // ----- Spacing math (work in mm for a single formula) -----
+  const pageWmm = pageUnit === "mm" ? pageWidth : inToMm(pageWidth);
+  const pageHmm = pageUnit === "mm" ? pageHeight : inToMm(pageHeight);
+
+  const cardWmm = inToMm(CARD_W_IN) + (bleedEdge ? 2 * bleedEdgeWidth : 0);
+  const cardHmm = inToMm(CARD_H_IN) + (bleedEdge ? 2 * bleedEdgeWidth : 0);
+
+  const maxSpacingMm = useMemo(() => {
+    const xDen = Math.max(1, columns - 1);
+    const yDen = Math.max(1, rows - 1);
+
+    const roomX = pageWmm - columns * cardWmm;
+    const roomY = pageHmm - rows * cardHmm;
+
+    const maxX = xDen > 0 ? Math.floor(Math.max(0, roomX / xDen)) : 0;
+    const maxY = yDen > 0 ? Math.floor(Math.max(0, roomY / yDen)) : 0;
+
+    return Math.floor(Math.min(maxX, maxY));
+  }, [pageWmm, pageHmm, columns, rows, cardWmm, cardHmm]);
+
+  const handleSpacingChange = (val: string) => {
+    const mm = Math.max(0, Number(val) || 0);
+    setCardSpacingMm(Math.min(mm, maxSpacingMm));
   };
-
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
-    setActiveId(null);
-
-    if (over && active.id !== over.id) {
-      const oldIndex = settingsPanelState.order.indexOf(active.id as string);
-      const newIndex = settingsPanelState.order.indexOf(over.id as string);
-      setPanelOrder(arrayMove(settingsPanelState.order, oldIndex, newIndex));
-    }
-  };
-
-  const renderSection = (id: string) => {
-    const isOpen = !settingsPanelState.collapsed[id];
-    const onToggle = () => togglePanelCollapse(id);
-
-    switch (id) {
-      case "layout":
-        return (
-          <SettingsPanel
-            key={id}
-            id={id}
-            title="Layout"
-            isOpen={isOpen}
-            onToggle={onToggle}
-            icon={LayoutTemplate}
-            mobile={mobile}
-          >
-            <LayoutSection />
-          </SettingsPanel>
-        );
-      case "bleed":
-        return (
-          <SettingsPanel
-            key={id}
-            id={id}
-            title="Bleed"
-            isOpen={isOpen}
-            onToggle={onToggle}
-            icon={Droplet}
-            mobile={mobile}
-          >
-            <BleedSection
-              reprocessSelectedImages={reprocessSelectedImages}
-              cancelProcessing={cancelProcessing}
-              cards={cards}
-            />
-          </SettingsPanel>
-        );
-      case "guides":
-        return (
-          <SettingsPanel
-            key={id}
-            id={id}
-            title="Guides"
-            isOpen={isOpen}
-            onToggle={onToggle}
-            icon={ScanLine}
-            mobile={mobile}
-          >
-            <GuidesSection />
-          </SettingsPanel>
-        );
-      case "card":
-        return (
-          <SettingsPanel
-            key={id}
-            id={id}
-            title="Card"
-            isOpen={isOpen}
-            onToggle={onToggle}
-            icon={Grid3X3}
-            mobile={mobile}
-          >
-            <CardSection />
-          </SettingsPanel>
-        );
-      case "filterSort":
-        return (
-          <SettingsPanel
-            key={id}
-            id={id}
-            title="Filter & Sort"
-            isOpen={isOpen}
-            onToggle={onToggle}
-            icon={Filter}
-            mobile={mobile}
-          >
-            <FilterSortSection />
-          </SettingsPanel>
-        );
-      case "application":
-        return (
-          <SettingsPanel
-            key={id}
-            id={id}
-            title="Application"
-            isOpen={isOpen}
-            onToggle={onToggle}
-            icon={Settings}
-            mobile={mobile}
-          >
-            <ApplicationSection cards={cards} />
-          </SettingsPanel>
-        );
-      default:
-        return null;
-    }
-  };
-
-  if (isCollapsed) {
-    return (
-      <div
-        className="h-full flex flex-col bg-gray-100 dark:bg-gray-700 items-center py-4 gap-4 overflow-x-hidden border-l border-gray-200 dark:border-gray-600"
-        onDoubleClick={() => toggleSettingsPanel()}
-      >
-        {settingsPanelState.order.map((id) => {
-          let Icon = Settings;
-          let label = "";
-          switch (id) {
-            case "layout":
-              Icon = LayoutTemplate;
-              label = "Layout";
-              break;
-            case "bleed":
-              Icon = Droplet;
-              label = "Bleed";
-              break;
-            case "guides":
-              Icon = ScanLine;
-              label = "Guides";
-              break;
-            case "card":
-              Icon = Grid3X3;
-              label = "Card";
-              break;
-            case "filterSort":
-              Icon = Filter;
-              label = "Filter & Sort";
-              break;
-            case "application":
-              Icon = Settings;
-              label = "Application";
-              break;
-          }
-
-          return (
-            <AutoTooltip key={id} content={label} placement="left" mobile={mobile}>
-              <button
-                onClick={() => {
-                  toggleSettingsPanel();
-                  if (settingsPanelState.collapsed[id]) {
-                    togglePanelCollapse(id);
-                  }
-                  // Wait for expansion animation/render
-                  setTimeout(() => {
-                    const element = document.getElementById(`settings-panel-${id}`);
-                    element?.scrollIntoView({ behavior: "smooth", block: "start" });
-                  }, 100);
-                }}
-                className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-600 dark:text-gray-300 transition-colors"
-              >
-                <Icon className="size-8" />
-              </button>
-            </AutoTooltip>
-          );
-        })}
-      </div>
-    );
-  }
 
   return (
-    <PullToRefresh
-      ref={scrollContainerRef}
-      onScroll={(e) => {
-        scrollPosRef.current = e.currentTarget.scrollTop;
-      }}
-      disabled={!!activeId}
-      hideScrollbars={true}
-      className="h-full flex flex-col bg-gray-100 dark:bg-gray-700 border-l border-gray-200 dark:border-gray-600 overflow-x-hidden"
-    >
-      <div className={`sticky top-0 z-20 bg-gray-100 dark:bg-gray-700 flex items-center justify-between p-4 shrink-0 border-b border-gray-300 dark:border-gray-600 ${mobile ? 'landscape:p-2 landscape:min-h-[50px]' : ''}`}>
-        <h2 className={`text-2xl font-semibold dark:text-white ${mobile ? 'landscape:text-lg landscape:hidden' : ''}`}>
-          Settings
-        </h2>
-        <div className="ml-auto">
-          {(() => {
-            const collapsedCount = settingsPanelState.order.filter(id => !!settingsPanelState.collapsed[id]).length;
-            const shouldExpand = collapsedCount >= settingsPanelState.order.length / 2;
-            return (
-              <AutoTooltip mobile={mobile} content={shouldExpand ? "Expand All" : "Collapse All"} placement="bottom-end">
-                <button
-                  onClick={() => shouldExpand ? expandAllPanels() : collapseAllPanels()}
-                  className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-600 dark:text-gray-300 transition-colors"
-                  aria-label={shouldExpand ? "Expand all sections" : "Collapse all sections"}
-                >
-                  {shouldExpand ? <ChevronsDown className="size-6" /> : <ChevronsUp className="size-6" />}
-                </button>
-              </AutoTooltip>
-            );
-          })()}
+    <div className="w-1/4 min-w-[18rem] max-w-[26rem] p-4 bg-gray-100 dark:bg-gray-700 h-full flex flex-col gap-4 overflow-y-auto">
+      <h2 className="text-2xl font-semibold dark:text-white">Settings</h2>
+
+      <div className="space-y-4">
+        <PageSizeControl />
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label>Columns</Label>
+            <TextInput
+              className="w-full"
+              type="number"
+              min={1}
+              max={10}
+              value={columns}
+              onChange={(e) => {
+                const v = Math.max(1, Math.min(10, parseInt(e.target.value || "1", 10)));
+                if (!Number.isNaN(v)) setColumns(v);
+              }}
+            />
+          </div>
+          <div>
+            <Label>Rows</Label>
+            <TextInput
+              className="w-full"
+              type="number"
+              min={1}
+              max={10}
+              value={rows}
+              onChange={(e) => {
+                const v = Math.max(1, Math.min(10, parseInt(e.target.value || "1", 10)));
+                if (!Number.isNaN(v)) setRows(v);
+              }}
+            />
+          </div>
         </div>
+
+        <div>
+          <Label>Bleed Edge (mm)</Label>
+          <TextInput
+            className="w-full"
+            type="number"
+            value={bleedEdgeWidth}
+            max={2}
+            onChange={(e) => {
+              const val = parseInt(e.target.value);
+              if (!isNaN(val)) {
+                setBleedEdgeWidth(val);
+                // Only bleed width affects reprocessing
+                debouncedReprocess(cards, val);
+              }
+            }}
+          />
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="bleed-edge"
+            checked={bleedEdge}
+            onChange={(e) => setBleedEdge(e.target.checked)}
+          />
+          <Label htmlFor="bleed-edge">Enable Bleed Edge</Label>
+        </div>
+
+        {/* NEW: Card-to-card spacing */}
+        <div>
+          <Label>Distance between cards (mm)</Label>
+          <TextInput
+            className="w-full"
+            type="number"
+            min={0}
+            step={0.5}
+            value={cardSpacingMm}
+            onChange={(e) => handleSpacingChange(e.target.value)}
+          />
+          <HelperText>
+            Max that fits with current layout: <b>{maxSpacingMm} mm</b>.
+          </HelperText>
+        </div>
+
+        <div>
+          <Label>Guides Color</Label>
+          <input
+            type="color"
+            value={guideColor}
+            onChange={(e) => setGuideColor(e.target.value)}
+            className="w-full h-10 p-0 border rounded"
+          />
+        </div>
+
+        <div>
+          <Label>Guides Width (px)</Label>
+          <TextInput
+            className="w-full"
+            type="number"
+            value={guideWidth}
+            step="0.1"
+            min="0"
+            onChange={(e) => {
+              const val = parseFloat(e.target.value);
+              if (!isNaN(val)) setGuideWidth(val);
+            }}
+          />
+        </div>
+
+        <div>
+          <Label>Zoom</Label>
+          <div className="flex items-center gap-2 justify-between w-full">
+            <Button
+              size="xs"
+              className="w-full"
+              color="blue"
+              onClick={() => setZoom(Math.max(0.1, zoom - 0.1))}
+            >
+              <ZoomOut className="size-4" />
+            </Button>
+            <Label className="w-full text-center">{zoom.toFixed(1)}x</Label>
+            <Button
+              size="xs"
+              className="w-full"
+              color="blue"
+              onClick={() => setZoom(zoom + 0.1)}
+            >
+              <ZoomIn className="size-4" />
+            </Button>
+          </div>
+        </div>
+
+        <HR className="dark:bg-gray-500" />
+
+        <ExportActions />
       </div>
 
-      <div className={`flex-1 ${mobile ? "mobile-scrollbar-hide pb-20 landscape:pb-4" : ""}`}>
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragStart={handleDragStart}
-          onDragEnd={handleDragEnd}
+      <div className="w-full flex justify-center">
+        <span
+          className="text-gray-400 hover:underline cursor-pointer text-sm font-medium"
+          onClick={resetSettings}
         >
-          <SortableContext
-            items={settingsPanelState.order}
-            strategy={showMobileLandscapeLayout ? rectSortingStrategy : verticalListSortingStrategy}
-          >
-            {showMobileLandscapeLayout ? (
-              <div className="flex flex-row gap-4 items-start p-4">
-                <div className="flex flex-col flex-1 gap-4">
-                  {settingsPanelState.order.filter((_, i) => i % 2 === 0).map((id) => renderSection(id))}
-                </div>
-                <div className="flex flex-col flex-1 gap-4">
-                  {settingsPanelState.order.filter((_, i) => i % 2 !== 0).map((id) => renderSection(id))}
-                </div>
-              </div>
-            ) : (
-              <div className="flex flex-col">
-                {settingsPanelState.order.map((id) => renderSection(id))}
-              </div>
-            )}
-          </SortableContext>
-        </DndContext>
+          Reset Settings
+        </span>
       </div>
-    </PullToRefresh>
+
+      <div className="w-full flex justify-center">
+        <span
+          className="text-red-600 hover:underline cursor-pointer text-sm font-medium"
+          onClick={async () => {
+            const ok = window.confirm(
+              "This will clear all saved Proxxied data (cards, cached images, settings) and reload the page. Continue?"
+            );
+            if (!ok) return;
+
+            try {
+              const toRemove: string[] = [];
+              for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && k.startsWith("proxxied:")) toRemove.push(k);
+              }
+              toRemove.forEach((k) => localStorage.removeItem(k));
+
+              if ("caches" in window) {
+                const names = await caches.keys();
+                await Promise.all(
+                  names.filter((n) => n.startsWith("proxxied-")).map((n) => caches.delete(n))
+                );
+              }
+            } catch {
+            } finally {
+              window.location.reload();
+            }
+          }}
+        >
+          Reset App Data
+        </span>
+      </div>
+
+      <div className="mt-auto space-y-3 pt-4">
+        <a
+          href="https://github.com/akurosia/proxies-at-home"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="block text-md underline text-center text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400"
+        >
+          Forked by Akurosia Kamo (Github)
+        </a>
+      </div>
+    </div>
   );
 }
