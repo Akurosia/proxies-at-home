@@ -3,7 +3,7 @@ name: Docker Image CI for GHCR (client & server)
 on:
   push:
     branches: [ main ]
-    tags: [ "v*" ]   # optional: build on version tags too
+    tags: [ "v*" ]
   workflow_dispatch:
 
 permissions:
@@ -14,33 +14,24 @@ concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_OWNER: ${{ github.repository_owner }}
-  # Build-time config for the client (adjust as needed)
-  VITE_API_BASE: http://localhost:3001
-
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        component: [ client, server ]
         include:
           - component: client
             context: ./client
             dockerfile: client/Dockerfile
             image: proxxied-client
             build-args: |
-              VITE_API_BASE=${{ env.VITE_API_BASE }}
+              VITE_API_BASE=http://localhost:3001
           - component: server
             context: ./server
             dockerfile: server/Dockerfile
             image: proxxied-server
-            build-args: |
-              # no build args
-
+            build-args: ""
     steps:
       - name: Checkout repo + submodules
         uses: actions/checkout@v4
@@ -56,7 +47,7 @@ jobs:
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
@@ -64,7 +55,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image }}
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           tags: |
             type=raw,value=latest
             type=sha,format=long
