@@ -6,6 +6,8 @@ COPY package*.json ./
 
 RUN npm install
 
+# copy all other files
+COPY . .
 # Set NODE_ENV to development
 ENV NODE_ENV=development
 
