@@ -34,7 +34,7 @@ type Store = {
 const defaultPageSettings = {
   pageSizeUnit: "in",
   pageOrientation: "portrait",
-  pageSizePreset: "Letter",
+  pageSizePreset: "A4",
   pageWidth: 8.5,
   pageHeight: 11,
   columns: 3,

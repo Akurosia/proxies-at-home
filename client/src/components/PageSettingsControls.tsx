@@ -269,12 +269,12 @@ export function PageSettingsControls() {
 
       <div className="mt-auto space-y-3 pt-4">
         <a
-          href="https://github.com/kclipsto/proxies-at-home"
+          href="https://github.com/akurosia/proxies-at-home"
           target="_blank"
           rel="noopener noreferrer"
           className="block text-md underline text-center text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400"
         >
-          Code by Kaiser Clipston (Github)
+          Forked by Akurosia Kamo (Github)
         </a>
       </div>
     </div>

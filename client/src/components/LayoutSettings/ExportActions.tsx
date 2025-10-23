@@ -73,39 +73,6 @@ export function ExportActions() {
       <Button color="green" onClick={handleExport} disabled={!cards.length}>
         Export to PDF
       </Button>
-
-      <Button
-        color="indigo"
-        onClick={() =>
-          ExportImagesZip({
-            cards,
-            originalSelectedImages,
-            fileBaseName: "card_images",
-            // If your zip helper later supports it, you can pass cachedImageUrls here too.
-          })
-        }
-        disabled={!cards.length}
-      >
-        Export Card Images (.zip)
-      </Button>
-
-      <Button color="cyan" onClick={handleCopyDecklist} disabled={!cards.length}>
-        Copy Decklist
-      </Button>
-
-      <Button color="blue" onClick={handleDownloadDecklist} disabled={!cards.length}>
-        Download Decklist (.txt)
-      </Button>
-
-      <a
-        href="https://buymeacoffee.com/kaiserclipston"
-        target="_blank"
-        rel="noopener noreferrer"
-      >
-        <Button size="sm" className="bg-yellow-500 hover:bg-yellow-600 w-full">
-          Buy Me a Coffee
-        </Button>
-      </a>
     </div>
   );
 }

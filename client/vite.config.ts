@@ -8,7 +8,11 @@ export default defineConfig({
   css: {
     postcss: path.resolve(__dirname, "../../postcss.config.js"),
   },
-  server: { host: true, port: 5173 },
+  server: { 
+    host: true, 
+    port: 5173, 
+    allowedHosts: ["proxxied.akurosia.de"]
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

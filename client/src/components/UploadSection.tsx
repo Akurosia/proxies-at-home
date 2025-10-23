@@ -1,5 +1,5 @@
 import fullLogo from "@/assets/fullLogo.png";
-import { API_BASE, LANGUAGE_OPTIONS } from "@/constants";
+import { API_BASE } from "@/constants";
 import {
   cardKey,
   parseDeckToInfos,
@@ -369,59 +369,6 @@ export function UploadSection() {
       <div className="flex-1 flex flex-col overflow-y-auto gap-6 px-4 pb-4">
         <div className="flex flex-col gap-4">
           <div className="space-y-1">
-            <h6 className="font-medium dark:text-white">
-              Upload MPC Images (
-              <a
-                href="https://mpcfill.com"
-                target="_blank"
-                rel="noreferrer"
-                className="underline hover:text-blue-600 dark:hover:text-blue-400"
-              >
-                MPC Autofill
-                <ExternalLink className="inline-block size-4 ml-1" />
-              </a>
-              )
-            </h6>
-
-            <label
-              htmlFor="upload-mpc"
-              className="inline-block w-full text-center cursor-pointer rounded-md bg-gray-300 dark:bg-gray-600 px-4 py-2 text-sm font-medium text-gray-900 dark:text-white hover:bg-gray-300 dark:hover:bg-gray-500"
-            >
-              Choose Files
-            </label>
-            <input
-              id="upload-mpc"
-              type="file"
-              accept="image/*"
-              multiple
-              onChange={handleUploadMpcFill}
-              onClick={(e) => ((e.target as HTMLInputElement).value = "")}
-              className="hidden"
-            />
-          </div>
-
-          <div className="space-y-1">
-            <h6 className="font-medium dark:text-white">
-              Import MPC Text (XML)
-            </h6>
-
-            <label
-              htmlFor="import-mpc-xml"
-              className="inline-block w-full text-center cursor-pointer rounded-md bg-gray-300 dark:bg-gray-600 px-4 py-2 text-sm font-medium text-gray-900 dark:text-white hover:bg-gray-300 dark:hover:bg-gray-500"
-            >
-              Choose File
-            </label>
-            <input
-              id="import-mpc-xml"
-              type="file"
-              accept=".xml,.txt,.csv,.log,text/xml,text/plain"
-              onChange={handleImportMpcXml}
-              onClick={(e) => ((e.target as HTMLInputElement).value = "")}
-              className="hidden"
-            />
-          </div>
-
-          <div className="space-y-1">
             <h6 className="font-medium dark:text-white">Upload Other Images</h6>
             <label
               htmlFor="upload-standard"
@@ -438,82 +385,16 @@ export function UploadSection() {
               onClick={(e) => ((e.target as HTMLInputElement).value = "")}
               className="hidden"
             />
-            <HelperText>
-              You can upload images from mtgcardsmith, custom designs, etc.
-            </HelperText>
           </div>
         </div>
 
         <HR className="my-0 dark:bg-gray-500" />
 
         <div className="space-y-4">
-          <div className="space-y-1">
-            <h6 className="font-medium dark:text-white">
-              Add Cards (
-              <a
-                href="https://scryfall.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline hover:text-blue-600 dark:hover:text-blue-400"
-              >
-                Scryfall
-                <ExternalLink className="inline-block size-4 ml-1" />
-              </a>
-              )
-            </h6>
-
-            <Textarea
-              className="h-64"
-              placeholder={`1x Sol Ring
-2x Counterspell
-For specific art include set / CN
-eg. Strionic Resonator (lcc)
-or Repurposing Bay (dft) 380`}
-              value={deckText}
-              onChange={(e) => setDeckText(e.target.value)}
-            />
-          </div>
-
           <div className="flex flex-col gap-2">
-            <Button color="blue" onClick={handleSubmit}>
-              Fetch Cards
-            </Button>
             <Button color="red" onClick={handleClear}>
               Clear Cards
             </Button>
-          </div>
-
-          <div className="space-y-1">
-            <div className="flex items-center justify-between">
-              <h6 className="font-medium dark:text-white">Language</h6>
-            </div>
-            <HelperText>Used for Scryfall lookups</HelperText>
-
-            <Select
-              className="w-full rounded-md bg-gray-300 dark:bg-gray-600 my-2 text-sm text-gray-900 dark:text-white hover:bg-gray-300 dark:hover:bg-gray-500"
-              value={globalLanguage}
-              onChange={(e) => setGlobalLanguage(e.target.value)}
-            >
-              {LANGUAGE_OPTIONS.map((o) => (
-                <option key={o.code} value={o.code}>
-                  {o.label}
-                </option>
-              ))}
-            </Select>
-          </div>
-
-          <div>
-            <h6 className="font-medium dark:text-white">Tips:</h6>
-
-            <List className="text-sm dark:text-white/60">
-              <ListItem>To change a card art - click it</ListItem>
-              <ListItem>
-                To move a card - drag from the box at the top right
-              </ListItem>
-              <ListItem>
-                To duplicate or delete a card - right click it
-              </ListItem>
-            </List>
           </div>
         </div>
 
