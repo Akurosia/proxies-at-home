@@ -2,15 +2,48 @@ import { db, type Image } from "@/db";
 import type { CardOption } from "../../../shared/types";
 
 /**
- * Calculates the SHA-256 hash of a file or blob.
- * @param blob The file or blob to hash.
- * @returns A hex string representation of the hash.
+ * Generate a UUID independent of Web Crypto availability.
+ */
+function getRandomUUID(): string {
+  const cryptoObj = (globalThis as any).crypto;
+  if (cryptoObj && typeof cryptoObj.randomUUID === "function") {
+    return cryptoObj.randomUUID();
+  }
+  // Fallback UUID v4 implementation
+  const template = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx";
+  return template.replace(/[xy]/g, (ch) => {
+    const r = (Math.random() * 16) | 0;
+    const v = ch === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+/**
+ * Calculates a hash of a file or blob.
+ *
+ * Preferred: SHA-256 via Web Crypto (browser, secure context).
+ * Fallback: simple deterministic hash (non-crypto) when Web Crypto
+ *           is not available (e.g. non-secure origin, older env).
  */
 export async function hashBlob(blob: Blob): Promise<string> {
-  const buffer = await blob.arrayBuffer();
-  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+  const cryptoObj: Crypto | undefined = (globalThis as any).crypto;
+
+  // Use Web Crypto when available
+  if (cryptoObj && cryptoObj.subtle && typeof cryptoObj.subtle.digest === "function") {
+    const buffer = await blob.arrayBuffer();
+    const hashBuffer = await cryptoObj.subtle.digest("SHA-256", buffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  // Fallback: simple non-cryptographic hash based on text content
+  const text = await blob.text();
+  let hash = 5381; // djb2
+  for (let i = 0; i < text.length; i++) {
+    hash = (hash * 33) ^ text.charCodeAt(i);
+  }
+  // Force unsigned 32-bit and return as hex
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 // --- Image Management ---
@@ -64,7 +97,9 @@ export async function addRemoteImage(
 ): Promise<string | undefined> {
   if (!imageUrls || imageUrls.length === 0) return undefined;
 
-  const imageId = imageUrls[0].includes("scryfall") ? imageUrls[0].split("?")[0] : imageUrls[0].split("id=")[1];
+  const imageId = imageUrls[0].includes("scryfall")
+    ? imageUrls[0].split("?")[0]
+    : imageUrls[0].split("id=")[1];
 
   await db.transaction("rw", db.images, async () => {
     const existingImage = await db.images.get(imageId);
@@ -109,12 +144,15 @@ export async function addRemoteImages(
   if (!images || images.length === 0) return result;
 
   // 1. Calculate IDs and deduplicate inputs
-  const inputsById = new Map<string, {
-    id: string;
-    urls: string[];
-    count: number;
-    prints?: Image['prints'];
-  }>();
+  const inputsById = new Map<
+    string,
+    {
+      id: string;
+      urls: string[];
+      count: number;
+      prints?: Image["prints"];
+    }
+  >();
 
   for (const img of images) {
     if (!img.imageUrls || img.imageUrls.length === 0) continue;
@@ -123,13 +161,15 @@ export async function addRemoteImages(
     const firstUrl = img.imageUrls[0];
     const imageId = firstUrl.includes("scryfall")
       ? firstUrl.split("?")[0]
-      : (firstUrl.includes("id=") ? firstUrl.split("id=")[1] : firstUrl);
+      : firstUrl.includes("id=")
+      ? firstUrl.split("id=")[1]
+      : firstUrl;
 
     result.set(firstUrl, imageId);
 
     const check = inputsById.get(imageId);
     if (check) {
-      check.count += (img.count || 1);
+      check.count += img.count || 1;
     } else {
       inputsById.set(imageId, {
         id: imageId,
@@ -158,7 +198,8 @@ export async function addRemoteImages(
           ...existing,
           refCount: existing.refCount + input.count,
           // Only update prints if new input has them and existing doesn't
-          prints: (input.prints && !existing.prints) ? input.prints : existing.prints,
+          prints:
+            input.prints && !existing.prints ? input.prints : existing.prints,
         };
         updates.push(update);
       } else {
@@ -183,7 +224,9 @@ export async function addRemoteImages(
 
 // This is a private helper and should not be exported.
 // It assumes it's already running within an active transaction.
-async function _removeImageRef_transactional(imageId: string): Promise<void> {
+async function _removeImageRef_transactional(
+  imageId: string
+): Promise<void> {
   if (!imageId) return;
 
   const image = await db.images.get(imageId);
@@ -229,7 +272,7 @@ export async function addCards(
 
   const newCards: CardOption[] = cardsData.map((cardData, i) => ({
     ...cardData,
-    uuid: crypto.randomUUID(),
+    uuid: getRandomUUID(),
     order: maxOrder + (i + 1) * 10,
   }));
 
@@ -287,7 +330,7 @@ export async function duplicateCard(uuid: string): Promise<void> {
 
     const newCard: CardOption = {
       ...cardToCopy,
-      uuid: crypto.randomUUID(),
+      uuid: getRandomUUID(),
       order: newOrder,
     };
 
@@ -322,7 +365,19 @@ export async function changeCardArtwork(
   applyToAll: boolean,
   newName?: string,
   newImageUrls?: string[],
-  cardMetadata?: Partial<Pick<CardOption, 'set' | 'number' | 'colors' | 'cmc' | 'type_line' | 'rarity' | 'mana_cost' | 'lang'>>
+  cardMetadata?: Partial<
+    Pick<
+      CardOption,
+      | "set"
+      | "number"
+      | "colors"
+      | "cmc"
+      | "type_line"
+      | "rarity"
+      | "mana_cost"
+      | "lang"
+    >
+  >
 ): Promise<void> {
   console.log("[changeCardArtwork] Called with:", {
     oldImageId,
@@ -374,7 +429,12 @@ export async function changeCardArtwork(
       Object.assign(changes, cardMetadata);
     }
 
-    console.log("[changeCardArtwork] Applying changes to", cardsToUpdate.length, "cards:", changes);
+    console.log(
+      "[changeCardArtwork] Applying changes to",
+      cardsToUpdate.length,
+      "cards:",
+      changes
+    );
 
     await db.cards.bulkUpdate(
       cardsToUpdate.map((c) => ({
@@ -398,7 +458,9 @@ export async function changeCardArtwork(
       // Use provided newImageUrls if available.
       // If not provided, and we are NOT renaming, fallback to oldImage.imageUrls.
       // If renaming, we assume it's a different card, so we default to just the newImageId.
-      const imageUrls = newImageUrls || (newName ? [newImageId] : (oldImage?.imageUrls || [newImageId]));
+      const imageUrls =
+        newImageUrls ||
+        (newName ? [newImageId] : oldImage?.imageUrls || [newImageId]);
 
       await db.images.add({
         id: newImageId,
@@ -430,7 +492,9 @@ export async function changeCardArtwork(
  * preventing floating point precision issues. This should be
  * called periodically or on application startup.
  */
-export async function rebalanceCardOrders(cards?: CardOption[]): Promise<void> {
+export async function rebalanceCardOrders(
+  cards?: CardOption[]
+): Promise<void> {
   await db.transaction("rw", db.cards, async () => {
     let sortedCards = cards;
     if (!sortedCards) {
@@ -438,9 +502,9 @@ export async function rebalanceCardOrders(cards?: CardOption[]): Promise<void> {
     }
 
     // A re-balance is needed if any card has a non-integer order value OR if we were passed a specific list (forcing rebalance)
-    const needsRebalance = cards || sortedCards.some(
-      (card) => !Number.isInteger(card.order)
-    );
+    const needsRebalance =
+      cards ||
+      sortedCards.some((card) => !Number.isInteger(card.order));
 
     if (needsRebalance) {
       const rebalancedCards = sortedCards.map((card, index) => ({
