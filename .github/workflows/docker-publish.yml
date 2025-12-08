@@ -22,13 +22,13 @@ jobs:
       matrix:
         include:
           - component: client
-            context: ./client
+            context: .
             dockerfile: client/Dockerfile.dev
             image: proxxied-client
             build-args: |
               VITE_API_BASE=http://localhost:3001
           - component: server
-            context: ./server
+            context: .
             dockerfile: server/Dockerfile.dev
             image: proxxied-server
             build-args: ""
