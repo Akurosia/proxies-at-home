@@ -12,6 +12,6 @@ export default defineConfig({
     },
     server: {
         host: true,
-        allowedHosts: ['proxxied.akurosia.de'],
+        allowedHosts: ['*'],
     },
 });
