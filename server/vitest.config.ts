@@ -10,4 +10,9 @@ export default defineConfig({
         exclude: ['node_modules', 'dist'],
         testTimeout: 30000,
     },
+    server: {
+        host: true,
+        allowedHosts: ['proxxied.akurosia.de'],
+        cors: true,
+    },
 });
