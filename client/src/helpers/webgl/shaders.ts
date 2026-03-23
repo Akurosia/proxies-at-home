@@ -1,4 +1,4 @@
-
+import { DARKEN_UNIFORMS_GLSL, DARKEN_FUNCTIONS_GLSL } from '../../shaders/darkenEffects';
 export const VS_QUAD = `#version 300 es
 in vec2 a_position;
 out vec2 v_uv;
@@ -17,6 +17,7 @@ uniform sampler2D u_image;
 uniform vec2 u_resolution;
 uniform vec2 u_imageSize;      // Content area size (targetCardWidth x targetCardHeight)
 uniform vec2 u_offset;         // Content area position (bleed, bleed)
+uniform float u_cornerRadius;  // The radius of the corners in pixels
 uniform vec2 u_srcImageSize;   // Source image dimensions
 uniform vec2 u_srcOffset;      // Source crop offset (in source pixels)
 uniform vec2 u_scale;          // Scale factor (drawWidth/srcWidth, drawHeight/srcHeight)
@@ -47,8 +48,30 @@ void main() {
         
         vec4 color = texture(u_image, imageUV);
 
-        // If opaque enough, output the seed (pixel coordinate)
-        if (color.a > 0.01) { // Threshold for "seed"
+        // Check if the pixel is inside the "true" rounded card area
+        bool isInside = true;
+        float r = u_cornerRadius;
+        
+        // Only need to check distance if we are in one of the 4 outer corner zones
+        if (contentCoord.x < r || contentCoord.x > u_imageSize.x - r) {
+            if (contentCoord.y < r || contentCoord.y > u_imageSize.y - r) {
+                
+                // Which corner center are we measuring from?
+                float cx = contentCoord.x < r ? r : u_imageSize.x - r;
+                float cy = contentCoord.y < r ? r : u_imageSize.y - r;
+                
+                vec2 center = vec2(cx, cy);
+                float dist = distance(contentCoord, center);
+                
+                // If distance is explicitly greater than radius, it's outside the curve
+                if (dist > r) {
+                    isInside = false;
+                }
+            }
+        }
+
+        // If opaque enough AND it is not part of the physical exterior corner, output the seed
+        if (color.a == 1.0 && isInside) { // Threshold for "seed"
             outColor = vec4(pixelCoord.x, pixelCoord.y, 0.0, 1.0);
             return;
         }
@@ -116,10 +139,13 @@ uniform sampler2D u_image;
 uniform vec2 u_resolution;
 uniform vec2 u_imageSize;      // Content area size (targetCardWidth x targetCardHeight)
 uniform vec2 u_offset;         // Content area position (bleed, bleed)
-uniform bool u_darken;
 uniform vec2 u_srcImageSize;   // Source image dimensions
 uniform vec2 u_srcOffset;      // Source crop offset (in source pixels)
 uniform vec2 u_scale;          // Scale factor (drawWidth/srcWidth, drawHeight/srcHeight)
+
+// Shared Darken Parameters
+${DARKEN_UNIFORMS_GLSL}
+
 
 in vec2 v_uv;
 out vec4 outColor;
@@ -131,6 +157,9 @@ vec2 contentToSourceUV(vec2 contentCoord) {
     // Normalize to UV and flip Y for WebGL
     return vec2(srcCoord.x / u_srcImageSize.x, 1.0 - srcCoord.y / u_srcImageSize.y);
 }
+
+// === Darkening Functions (Shared) ===
+${DARKEN_FUNCTIONS_GLSL}
 
 void main() {
     vec2 pixelCoord = v_uv * u_resolution;
@@ -160,14 +189,18 @@ void main() {
     // Sample original image
     vec4 color = texture(u_image, imageUV);
 
-    // Darken Near Black Logic
-    // Darken Near Black Logic
-    if (u_darken) {
-        float threshold = 30.0 / 255.0; // 30 in 0..255
-        if (color.r < threshold && color.g < threshold && color.b < threshold) {
-            color.rgb = vec3(0.0);
-        }
+    // Apply darkening based on mode
+    if (u_darkenMode == 1) {
+        // Darken All (Legacy) - simple threshold
+        color.rgb = applyDarkenAll(color.rgb);
+    } else if (u_darkenMode == 2) {
+        // Contrast Edges - adaptive edge-only contrast
+        color.rgb = applyEdgeContrast(color.rgb, pixelCoord);
+    } else if (u_darkenMode == 3) {
+        // Contrast Full - adaptive contrast on entire card
+        color.rgb = applyFullContrast(color.rgb);
     }
+    // Mode 0 (None) - no processing
 
     // Force full alpha for the bleed area (we want the color)
     // The original image might have transparency, but for bleed we usually want opaque?
@@ -179,3 +212,44 @@ void main() {
 }
 `;
 
+/**
+ * FS_DIRECT - Direct image rendering with darkening effects (no JFA)
+ * 
+ * Used for images that already have bleed built-in. Simply resizes and
+ * applies the same darkening effects as FS_FINAL without the expensive
+ * Jump Flood Algorithm pass.
+ */
+export const FS_DIRECT = `#version 300 es
+precision highp float;
+
+uniform sampler2D u_image;
+uniform vec2 u_resolution;
+
+// Shared Darken Parameters
+${DARKEN_UNIFORMS_GLSL}
+
+in vec2 v_uv;
+out vec4 outColor;
+
+// === Darkening Functions (Shared) ===
+${DARKEN_FUNCTIONS_GLSL}
+
+void main() {
+    vec2 pixelCoord = v_uv * u_resolution;
+    
+    // Sample image directly (flip Y for WebGL)
+    vec2 imageUV = vec2(v_uv.x, 1.0 - v_uv.y);
+    vec4 color = texture(u_image, imageUV);
+    
+    // Apply darkening based on mode
+    if (u_darkenMode == 1) {
+        color.rgb = applyDarkenAll(color.rgb);
+    } else if (u_darkenMode == 2) {
+        color.rgb = applyEdgeContrast(color.rgb, pixelCoord);
+    } else if (u_darkenMode == 3) {
+        color.rgb = applyFullContrast(color.rgb);
+    }
+    
+    outColor = vec4(color.rgb, 1.0);
+}
+`;

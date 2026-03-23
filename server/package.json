@@ -1,13 +1,13 @@
 {
   "name": "server",
-  "version": "1.0.0",
+  "private": true,
   "description": "",
   "main": "index.js",
   "scripts": {
     "test": "vitest run --silent",
     "test:ui": "vitest --ui --coverage.enabled=true",
-    "dev": "nodemon --exec tsx src/index.ts",
-    "build": "tsc -p tsconfig.build.json",
+    "dev": "NODE_ENV=development nodemon --exec tsx src/index.ts",
+    "build": "rimraf dist && tsc -p tsconfig.build.json && cpx \"cardbacks/**/*\" dist/server/cardbacks",
     "start": "node dist/server/src/index.js",
     "lint": "eslint ."
   },
@@ -18,24 +18,35 @@
   "dependencies": {
     "axios": "^1.11.0",
     "axios-retry": "^4.5.0",
+    "better-sqlite3": "^12.5.0",
     "bottleneck": "^2.19.5",
     "cheerio": "^1.1.2",
+    "compression": "^1.8.1",
     "cors": "^2.8.5",
-    "express": "^5.1.0",
-    "multer": "^1.4.5-lts.1"
+    "express": "^5.2.1",
+    "lru-cache": "^11.2.4",
+    "multer": "^2.0.2",
+    "node-cron": "^4.2.1",
+    "stream-json": "^1.9.1"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.5",
+    "@types/express": "^5.0.6",
     "@types/multer": "^2.0.0",
+    "@types/node-cron": "^3.0.11",
+    "@types/stream-json": "^1.7.8",
     "@types/supertest": "^6.0.2",
-    "@typescript-eslint/parser": "^8.47.0",
-    "@vitest/coverage-v8": "^4.0.9",
-    "eslint": "^9.39.1",
+    "@typescript-eslint/parser": "^8.51.0",
+    "@vitest/coverage-v8": "^4.0.16",
+    "cpx2": "^8.0.0",
+    "eslint": "^9.39.2",
     "nodemon": "^3.1.11",
+    "rimraf": "^6.1.2",
     "supertest": "^7.0.0",
-    "tsx": "^4.20.6",
-    "typescript-eslint": "^8.47.0",
-    "vitest": "^4.0.9"
+    "tsx": "^4.21.0",
+    "typescript-eslint": "^8.51.0",
+    "vitest": "^4.0.16"
   }
 }

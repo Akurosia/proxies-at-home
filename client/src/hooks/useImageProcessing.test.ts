@@ -11,6 +11,13 @@ vi.mock("../db", () => ({
     images: {
       get: vi.fn(),
       update: vi.fn(),
+      put: vi.fn(),
+    },
+    user_images: {
+      get: vi.fn(),
+    },
+    cards: {
+      update: vi.fn(),
     },
   },
 }));
@@ -21,7 +28,7 @@ vi.mock("../store", () => ({
   useSettingsStore: Object.assign(
     vi.fn((selector) => selector({
       dpi: 300,
-      darkenNearBlack: false,
+      darkenMode: 'none',
       hasHydrated: true,
     })),
     {
@@ -29,8 +36,17 @@ vi.mock("../store", () => ({
         hasHydrated: vi.fn().mockReturnValue(true),
         onFinishHydration: vi.fn().mockReturnValue(() => { }),
       },
+      getState: vi.fn().mockReturnValue({
+        dpi: 300,
+        darkenMode: 'none',
+        bleedEdgeWidth: 1, // Default matching default props in tests
+        unit: 'mm',
+      }),
     }
   ),
+  useProjectStore: vi.fn((selector) => selector({
+    currentProjectId: 'test-project-id',
+  })),
 }));
 
 describe("useImageProcessing", () => {
@@ -114,10 +130,11 @@ describe("useImageProcessing", () => {
     });
 
     expect(mockProcess).toHaveBeenCalledTimes(1);
-    expect(db.images.update).toHaveBeenCalledWith("image123", expect.any(Object));
+    expect(db.images.put).toHaveBeenCalled();
   });
 
   it("should handle image processing failure", async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => { });
     (db.images.get as Mock).mockResolvedValue({ sourceUrl: "http://example.com/img.png" });
     mockProcess.mockRejectedValue(new Error("Processing failed"));
 
@@ -133,8 +150,10 @@ describe("useImageProcessing", () => {
       await result.current.ensureProcessed(card);
     });
 
-    expect(result.current.loadingMap[card.uuid]).toBe("error");
-    expect(db.images.update).not.toHaveBeenCalled();
+    // With imageId-keyed loading state, check using getLoadingState
+    expect(result.current.getLoadingState(card.imageId)).toBe("error");
+    expect(db.images.put).not.toHaveBeenCalled();
+    consoleSpy.mockRestore();
   });
 
   it("reprocessSelectedImages should process multiple cards", async () => {
@@ -144,8 +163,8 @@ describe("useImageProcessing", () => {
     ];
 
     (db.images.get as Mock).mockImplementation((id) => {
-      if (id === 'img1') return Promise.resolve({ sourceUrl: 'url1' });
-      if (id === 'img2') return Promise.resolve({ sourceUrl: 'url2' });
+      if (id === 'img1') return Promise.resolve({ sourceUrl: 'https://example.com/url1' });
+      if (id === 'img2') return Promise.resolve({ sourceUrl: 'https://example.com/url2' });
       return Promise.resolve(undefined);
     });
 
@@ -173,9 +192,7 @@ describe("useImageProcessing", () => {
     });
 
     expect(mockProcess).toHaveBeenCalledTimes(2);
-    expect(db.images.update).toHaveBeenCalledTimes(2);
-    expect(db.images.update).toHaveBeenCalledWith('img1', expect.any(Object));
-    expect(db.images.update).toHaveBeenCalledWith('img2', expect.any(Object));
+    expect(db.images.put).toHaveBeenCalledTimes(2);
   });
 
   it("should use originalBlob if available", async () => {
@@ -216,6 +233,7 @@ describe("useImageProcessing", () => {
   });
 
   it("should handle process returning error object", async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => { });
     (db.images.get as Mock).mockResolvedValue({ sourceUrl: "http://example.com/img.png" });
     mockProcess.mockResolvedValue({ error: "Processing failed gracefully" });
 
@@ -231,13 +249,16 @@ describe("useImageProcessing", () => {
       await result.current.ensureProcessed(card);
     });
 
-    expect(result.current.loadingMap[card.uuid]).toBe("error");
-    expect(db.images.update).not.toHaveBeenCalled();
+    // With imageId-keyed loading state, check using getLoadingState
+    expect(result.current.getLoadingState(card.imageId)).toBe("error");
+    expect(db.images.put).not.toHaveBeenCalled();
+    consoleSpy.mockRestore();
   });
 
   it("reprocessSelectedImages should handle errors", async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => { });
     const cards = [{ ...card, uuid: '1', imageId: 'img1' }];
-    (db.images.get as Mock).mockResolvedValue({ sourceUrl: 'url1' });
+    (db.images.get as Mock).mockResolvedValue({ sourceUrl: 'https://example.com/url1' });
     mockProcess.mockResolvedValue({ error: "Processing failed" });
 
     const { result } = renderHook(() =>
@@ -253,7 +274,182 @@ describe("useImageProcessing", () => {
     });
 
     expect(mockProcess).toHaveBeenCalledTimes(1);
-    expect(db.images.update).not.toHaveBeenCalled();
+    expect(db.images.put).not.toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
+
+  describe("in-flight deduplication", () => {
+    it("should NOT call process twice for same imageId requested concurrently", async () => {
+      (db.images.get as Mock).mockResolvedValue({ sourceUrl: "http://example.com/img.png" });
+
+      // Make process take some time to complete
+      let resolveProcess: (value: unknown) => void;
+      mockProcess.mockReturnValue(new Promise(resolve => {
+        resolveProcess = resolve;
+      }));
+
+      const { result } = renderHook(() =>
+        useImageProcessing({
+          unit: "mm",
+          bleedEdgeWidth: 1,
+          imageProcessor: mockImageProcessor,
+        })
+      );
+
+      // Start two requests for the same imageId concurrently
+      const card1 = { ...card, uuid: "card1", imageId: "shared-image" };
+      const card2 = { ...card, uuid: "card2", imageId: "shared-image" };
+
+      let promise1Complete = false;
+      let promise2Complete = false;
+
+      await act(async () => {
+        result.current.ensureProcessed(card1).then(() => { promise1Complete = true; });
+        result.current.ensureProcessed(card2).then(() => { promise2Complete = true; });
+      });
+
+      // Should only call process ONCE even though two cards requested the same image
+      expect(mockProcess).toHaveBeenCalledTimes(1);
+
+      // Now resolve the process
+      await act(async () => {
+        resolveProcess!({
+          displayBlob: new Blob(['test']),
+          displayDpi: 300,
+          displayBleedWidth: 1,
+          exportBlob: new Blob(['test']),
+          exportDpi: 600,
+          exportBleedWidth: 1,
+          displayBlobDarkened: new Blob(['test']),
+          exportBlobDarkened: new Blob(['test']),
+        });
+        // Wait for promises to settle
+        await new Promise(resolve => setTimeout(resolve, 10));
+      });
+
+      // Both cards should complete
+      expect(promise1Complete).toBe(true);
+      expect(promise2Complete).toBe(true);
+    });
+
+    it("should skip processing for already-processed imageIds in same session", async () => {
+      // First call: image needs processing
+      (db.images.get as Mock).mockResolvedValue({ sourceUrl: "http://example.com/img.png" });
+      mockProcess.mockResolvedValue({
+        displayBlob: new Blob(['test']),
+        displayDpi: 300,
+        displayBleedWidth: 1,
+        exportBlob: new Blob(['test']),
+        exportDpi: 600,
+        exportBleedWidth: 1,
+        displayBlobDarkened: new Blob(['test']),
+        exportBlobDarkened: new Blob(['test']),
+      });
+
+      const { result } = renderHook(() =>
+        useImageProcessing({
+          unit: "mm",
+          bleedEdgeWidth: 1,
+          imageProcessor: mockImageProcessor,
+        })
+      );
+
+      await act(async () => {
+        await result.current.ensureProcessed(card);
+      });
+
+      expect(mockProcess).toHaveBeenCalledTimes(1);
+      mockProcess.mockClear();
+
+      // Second call with different card but same imageId
+      // Mock should return generatedHasBuiltInBleed to indicate settings are not invalidated
+      (db.images.get as Mock).mockResolvedValue({
+        sourceUrl: "http://example.com/img.png",
+        generatedHasBuiltInBleed: false,  // Settings not invalidated
+      });
+      const card2 = { ...card, uuid: "different-uuid", imageId: "image123" };
+
+      await act(async () => {
+        await result.current.ensureProcessed(card2);
+      });
+
+      // Should NOT call process again - already processed in this session
+      expect(mockProcess).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("getLoadingState", () => {
+    it("should return 'idle' for undefined imageId", () => {
+      const { result } = renderHook(() =>
+        useImageProcessing({
+          unit: "mm",
+          bleedEdgeWidth: 1,
+          imageProcessor: mockImageProcessor,
+        })
+      );
+
+      expect(result.current.getLoadingState(undefined)).toBe("idle");
+    });
+
+    it("should return 'idle' for unknown imageId", () => {
+      const { result } = renderHook(() =>
+        useImageProcessing({
+          unit: "mm",
+          bleedEdgeWidth: 1,
+          imageProcessor: mockImageProcessor,
+        })
+      );
+
+      expect(result.current.getLoadingState("unknown-image")).toBe("idle");
+    });
+
+    it("should return 'loading' while processing", async () => {
+      (db.images.get as Mock).mockResolvedValue({ sourceUrl: "http://example.com/img.png" });
+
+      let resolveProcess: (value: unknown) => void;
+      mockProcess.mockReturnValue(new Promise(resolve => {
+        resolveProcess = resolve;
+      }));
+
+      const { result } = renderHook(() =>
+        useImageProcessing({
+          unit: "mm",
+          bleedEdgeWidth: 1,
+          imageProcessor: mockImageProcessor,
+        })
+      );
+
+      // Start processing (don't await)
+      act(() => {
+        result.current.ensureProcessed(card);
+      });
+
+      // Give time for state update
+      await act(async () => {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      });
+
+      // Should be loading
+      expect(result.current.getLoadingState(card.imageId)).toBe("loading");
+
+      // Complete processing
+      await act(async () => {
+        resolveProcess!({
+          displayBlob: new Blob(['test']),
+          displayDpi: 300,
+          displayBleedWidth: 1,
+          exportBlob: new Blob(['test']),
+          exportDpi: 600,
+          exportBleedWidth: 1,
+          displayBlobDarkened: new Blob(['test']),
+          exportBlobDarkened: new Blob(['test']),
+        });
+        await new Promise(resolve => setTimeout(resolve, 10));
+      });
+
+      // Should be idle after completion
+      expect(result.current.getLoadingState(card.imageId)).toBe("idle");
+    });
   });
 });
 

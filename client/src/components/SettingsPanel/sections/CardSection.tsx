@@ -1,18 +1,12 @@
 import { useSettingsStore } from "@/store/settings";
-import { Label, Select, Tooltip } from "flowbite-react";
-import { NumberInput } from "../../NumberInput";
+import { Label, Checkbox, Button } from "flowbite-react";
+import { NumberInput } from "@/components/common";
 import { useNormalizedInput, usePositionInput } from "@/hooks/useInputHooks";
-import { HelpCircle } from "lucide-react";
-import { useMemo, useEffect } from "react";
-
-const INCH_TO_MM = 25.4;
-const CARD_W_IN = 2.5;
-const CARD_H_IN = 3.5;
-const MAX_BROWSER_DIMENSION = 16384;
-
-function inToMm(inches: number) {
-    return inches * INCH_TO_MM;
-}
+import { AutoTooltip } from "@/components/common";
+import { useMemo, useState } from "react";
+import { PerCardOffsetModal } from "@/components/PerCardOffsetModal";
+import { WrenchIcon } from "lucide-react";
+import { CONSTANTS } from "@/constants/commonConstants";
 
 export function CardSection() {
     const columns = useSettingsStore((state) => state.columns);
@@ -25,18 +19,24 @@ export function CardSection() {
     const cardSpacingMm = useSettingsStore((state) => state.cardSpacingMm);
     const cardPositionX = useSettingsStore((state) => state.cardPositionX);
     const cardPositionY = useSettingsStore((state) => state.cardPositionY);
-    const dpi = useSettingsStore((state) => state.dpi);
+    const useCustomBackOffset = useSettingsStore((state) => state.useCustomBackOffset);
+    const cardBackPositionX = useSettingsStore((state) => state.cardBackPositionX);
+    const cardBackPositionY = useSettingsStore((state) => state.cardBackPositionY);
 
     const setCardSpacingMm = useSettingsStore((state) => state.setCardSpacingMm);
     const setCardPositionX = useSettingsStore((state) => state.setCardPositionX);
     const setCardPositionY = useSettingsStore((state) => state.setCardPositionY);
-    const setDpi = useSettingsStore((state) => state.setDpi);
+    const setUseCustomBackOffset = useSettingsStore((state) => state.setUseCustomBackOffset);
+    const setCardBackPositionX = useSettingsStore((state) => state.setCardBackPositionX);
+    const setCardBackPositionY = useSettingsStore((state) => state.setCardBackPositionY);
 
-    const pageWmm = pageUnit === "mm" ? pageWidth : inToMm(pageWidth);
-    const pageHmm = pageUnit === "mm" ? pageHeight : inToMm(pageHeight);
+    const [showPerCardModal, setShowPerCardModal] = useState(false);
 
-    const cardWmm = inToMm(CARD_W_IN) + (bleedEdge ? 2 * bleedEdgeWidth : 0);
-    const cardHmm = inToMm(CARD_H_IN) + (bleedEdge ? 2 * bleedEdgeWidth : 0);
+    const pageWmm = pageUnit === "mm" ? pageWidth : pageWidth * CONSTANTS.MM_PER_IN;
+    const pageHmm = pageUnit === "mm" ? pageHeight : pageHeight * CONSTANTS.MM_PER_IN;
+
+    const cardWmm = CONSTANTS.CARD_WIDTH_MM + (bleedEdge ? 2 * bleedEdgeWidth : 0);
+    const cardHmm = CONSTANTS.CARD_HEIGHT_MM + (bleedEdge ? 2 * bleedEdgeWidth : 0);
 
     const maxSpacingMm = useMemo(() => {
         const xDen = Math.max(1, columns - 1);
@@ -59,72 +59,45 @@ export function CardSection() {
 
     const cardPositionXInput = usePositionInput(cardPositionX, setCardPositionX);
     const cardPositionYInput = usePositionInput(cardPositionY, setCardPositionY);
-
-    const maxSafeDpiForPage = useMemo(() => {
-        const widthIn = pageUnit === "in" ? pageWidth : pageWidth / INCH_TO_MM;
-        const heightIn = pageUnit === "in" ? pageHeight : pageHeight / INCH_TO_MM;
-        return Math.floor(
-            Math.min(
-                MAX_BROWSER_DIMENSION / widthIn,
-                MAX_BROWSER_DIMENSION / heightIn
-            )
-        );
-    }, [pageWidth, pageHeight, pageUnit]);
-
-    const availableDpiOptions = useMemo(() => {
-        const options: { label: string; value: number }[] = [];
-        for (let i = 300; i <= maxSafeDpiForPage; i += 300) {
-            options.push({ label: `${i}`, value: i });
-        }
-
-        if (maxSafeDpiForPage % 300 !== 0) {
-            options.push({
-                label: `${maxSafeDpiForPage} (Max)`,
-                value: maxSafeDpiForPage,
-            });
-        }
-
-        options.forEach((opt) => {
-            if (opt.value === 300) opt.label = "300 (Fastest)";
-            else if (opt.value === 600) opt.label = "600 (Fast)";
-            else if (opt.value === 900) opt.label = "900 (Sharp)";
-            else if (opt.value === 1200) opt.label = "1200 (High Quality)";
-            else if (opt.value === maxSafeDpiForPage)
-                opt.label = `${maxSafeDpiForPage} (Max)`;
-            else opt.label = `${opt.value}`;
-        });
-
-        return options;
-    }, [maxSafeDpiForPage]);
-
-    useEffect(() => {
-        if (!availableDpiOptions.some((opt) => opt.value === dpi)) {
-            const highestOption = availableDpiOptions[availableDpiOptions.length - 1];
-            if (highestOption) {
-                setDpi(highestOption.value);
-            }
-        }
-    }, [availableDpiOptions, dpi, setDpi]);
+    const cardBackPositionXInput = usePositionInput(cardBackPositionX, setCardBackPositionX);
+    const cardBackPositionYInput = usePositionInput(cardBackPositionY, setCardBackPositionY);
 
     return (
         <div className="space-y-4">
-            <div>
-                <div className="flex items-center justify-between relative">
-                    <Label>Card Spacing (mm)</Label>
-                    {cardSpacingInput.warning && (
-                        <span className="absolute right-8 text-xs text-red-500 font-medium animate-pulse">
-                            {cardSpacingInput.warning}
-                        </span>
-                    )}
-                    <Tooltip
-                        content={
-                            <div className="whitespace-nowrap">
-                                Max that fits with current layout: {maxSpacingMm} mm
-                            </div>
-                        }
+            <div className="flex flex-col space-y-2">
+                <Label className="font-bold">Advanced Positioning</Label>
+                <div className="flex items-center gap-2 pt-2">
+                    <Button
+                        color="green"
+                        onClick={() => setShowPerCardModal(true)}
+                        className="flex-1 gap-2"
                     >
-                        <HelpCircle className="w-4 h-4 text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400 cursor-pointer" />
-                    </Tooltip>
+                        <WrenchIcon className="h-5 w-5" />
+                        Card Back Alignement Tool
+                    </Button>
+                    <AutoTooltip content="Adjust position and rotation for each card back individually. Use this to fine-tune alignment for each position in the grid." />
+                </div>
+            </div>
+
+            <div>
+
+                <div className="flex flex-col space-y-2">
+                    <Label className="font-bold">Basic Positioning</Label>
+                    <div className="flex items-center justify-between relative">
+                        <Label>Card Spacing (mm)</Label>
+                        {cardSpacingInput.warning && (
+                            <span className="absolute right-8 text-xs text-red-500 font-medium animate-pulse">
+                                {cardSpacingInput.warning}
+                            </span>
+                        )}
+                        <AutoTooltip
+                            content={
+                                <div className="whitespace-nowrap">
+                                    Max that fits with current layout: {maxSpacingMm} mm
+                                </div>
+                            }
+                        />
+                    </div>
                 </div>
                 <NumberInput
                     ref={cardSpacingInput.inputRef}
@@ -141,17 +114,13 @@ export function CardSection() {
             <div className="space-y-3">
                 <div className="flex items-center justify-between">
                     <Label>Card Position Adjustment (mm)</Label>
-                    <Tooltip content="Adjust card position for perfect printer alignment. Use small values (0.1-2.0mm) for fine-tuning.">
-                        <HelpCircle className="w-4 h-4 text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400 cursor-pointer" />
-                    </Tooltip>
+                    <AutoTooltip content="Adjust card position for perfect printer alignment. Use small values (0.1-2.0mm) for fine-tuning." />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                     <div>
                         <div className="flex items-center justify-between">
                             <Label>Horizontal Offset</Label>
-                            <Tooltip content="Positive = right, negative = left">
-                                <HelpCircle className="w-4 h-4 text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400 cursor-pointer" />
-                            </Tooltip>
+                            <AutoTooltip content="Positive = right, negative = left" />
                         </div>
                         <NumberInput
                             ref={cardPositionXInput.inputRef}
@@ -166,9 +135,7 @@ export function CardSection() {
                     <div>
                         <div className="flex items-center justify-between">
                             <Label>Vertical Offset</Label>
-                            <Tooltip content="Positive = down, negative = up">
-                                <HelpCircle className="w-4 h-4 text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400 cursor-pointer" />
-                            </Tooltip>
+                            <AutoTooltip content="Positive = down, negative = up" />
                         </div>
                         <NumberInput
                             ref={cardPositionYInput.inputRef}
@@ -183,22 +150,60 @@ export function CardSection() {
                 </div>
             </div>
 
-            <div>
-                <Label>PDF Export DPI</Label>
-                <Select
-                    value={dpi}
-                    onChange={(e) => {
-                        const val = parseInt(e.target.value, 10);
-                        if (!isNaN(val)) setDpi(val);
-                    }}
-                >
-                    {availableDpiOptions.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                        </option>
-                    ))}
-                </Select>
+            <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                    <Checkbox
+                        id="useCustomBackOffset"
+                        checked={useCustomBackOffset}
+                        onChange={(e) => setUseCustomBackOffset(e.target.checked)}
+                    />
+                    <Label htmlFor="useCustomBackOffset" className="cursor-pointer select-none">
+                        Separate Back Offset
+                    </Label>
+                    <AutoTooltip content="Use different offsets for back cards (useful for printer alignment in duplex printing). Applies to Backs-only exports and Duplex mode back pages." />
+                </div>
+
+                {useCustomBackOffset && (
+                    <>
+                        <div className="grid grid-cols-2 gap-3 border-gray-200 dark:border-gray-700">
+                            <div>
+                                <div className="flex items-center justify-between">
+                                    <Label>Back Horizontal</Label>
+                                </div>
+                                <NumberInput
+                                    ref={cardBackPositionXInput.inputRef}
+                                    className="w-full"
+                                    step={0.1}
+                                    defaultValue={cardBackPositionXInput.defaultValue}
+                                    onChange={cardBackPositionXInput.handleChange}
+                                    onBlur={cardBackPositionXInput.handleBlur}
+                                    placeholder="-0.0"
+                                />
+                            </div>
+                            <div>
+                                <div className="flex items-center justify-between">
+                                    <Label>Back Vertical</Label>
+                                </div>
+                                <NumberInput
+                                    ref={cardBackPositionYInput.inputRef}
+                                    className="w-full"
+                                    step={0.1}
+                                    defaultValue={cardBackPositionYInput.defaultValue}
+                                    onChange={cardBackPositionYInput.handleChange}
+                                    onBlur={cardBackPositionYInput.handleBlur}
+                                    placeholder="-0.0"
+                                />
+                            </div>
+                        </div>
+
+                    </>
+                )}
             </div>
+
+            <PerCardOffsetModal
+                isOpen={showPerCardModal}
+                onClose={() => setShowPerCardModal(false)}
+            />
         </div>
     );
 }

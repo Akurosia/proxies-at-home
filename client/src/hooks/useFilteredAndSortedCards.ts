@@ -1,209 +1,141 @@
 import { useMemo } from "react";
-import { extractCardInfo } from "../helpers/CardInfoHelper";
 import { useSettingsStore } from "../store/settings";
 import type { CardOption } from "../../../shared/types";
+import { isCardbackId } from "../helpers/cardbackLibrary";
+import { useSelectionStore } from "../store/selection";
+import { useShallow } from "zustand/shallow";
+import { sortCards, matchesFilters, getCardTypes, type FilterCriteria } from "../helpers/sortAndFilterUtils";
 
-// Constants moved outside for reusability
-const COLOR_ORDER: string[] = ['g', 'u', 'r', 'w', 'b', 'c'];
-const WUBRG_ORDER: Record<string, number> = { w: 1, u: 2, b: 3, r: 4, g: 5 };
-const RARITY_MAP: Record<string, number> = {
-    common: 1,
-    uncommon: 2,
-    rare: 3,
-    mythic: 4,
-    special: 5,
-    bonus: 6,
-};
-const BASIC_LANDS = ["plains", "island", "swamp", "mountain", "forest"];
-
-// Helper functions moved outside to avoid recreation on every render
-const getSortableType = (typeLine: string = "") => {
-    return typeLine
-        .replace("Legendary ", "")
-        .replace("Basic ", "")
-        .replace("Snow ", "")
-        .replace("World ", "")
-        .replace("Tribal ", "")
-        .replace("Kindred ", "");
-};
-
-const getPrimaryColor = (colors: string[] | undefined) => {
-    if (colors && colors.length > 0) {
-        const sortedColors = [...colors].sort((x, y) => {
-            return (WUBRG_ORDER[x.toLowerCase()] || 99) - (WUBRG_ORDER[y.toLowerCase()] || 99);
-        });
-        return sortedColors[0].toLowerCase();
-    }
-    return 'c'; // Colorless
-};
-
-const getWubrgString = (colors: string[] | undefined) => {
-    return [...(colors || [])].sort((x, y) => {
-        return (WUBRG_ORDER[x.toLowerCase()] || 99) - (WUBRG_ORDER[y.toLowerCase()] || 99);
-    }).join("");
-};
-
-const getRarityValue = (c: CardOption) => {
-    if (c.rarity) return RARITY_MAP[c.rarity.toLowerCase()] || 0;
-    // Fallback for basic lands if rarity is missing
-    if (
-        c.type_line?.toLowerCase().includes("basic land") ||
-        BASIC_LANDS.includes(c.name.toLowerCase())
-    ) {
-        return 1; // Common
-    }
-    return 0;
-};
-
+/**
+ * Hook to filter and sort cards based on global settings.
+ * Uses sortAndFilterUtils for the heavy lifting.
+ */
 export function useFilteredAndSortedCards(cards: CardOption[] = []) {
-    const sortBy = useSettingsStore((state) => state.sortBy);
-    const sortOrder = useSettingsStore((state) => state.sortOrder);
-    const filterManaCost = useSettingsStore((state) => state.filterManaCost);
-    const filterColors = useSettingsStore((state) => state.filterColors);
-    const filterMatchType = useSettingsStore((state) => state.filterMatchType);
+    // Use single combined selector with shallow comparison to reduce re-renders
+    const { sortBy, sortOrder, filterManaCost, filterColors, filterTypes, filterCategories, filterMatchType } =
+        useSettingsStore(
+            useShallow((state) => ({
+                sortBy: state.sortBy,
+                sortOrder: state.sortOrder,
+                filterManaCost: state.filterManaCost,
+                filterColors: state.filterColors,
+                filterTypes: state.filterTypes,
+                filterCategories: state.filterCategories,
+                filterMatchType: state.filterMatchType,
+            }))
+        );
+    const flippedCardsSet = useSelectionStore((state) => state.flippedCards);
 
-    // Step 1: Filter cards (separate memo for better granularity)
-    const filteredCards = useMemo(() => {
-
-        let result = cards;
-
-        // Filter by mana cost
-        if (filterManaCost.length > 0) {
-            result = result.filter((c) => {
-                const cmc = c.cmc ?? 0;
-                if (filterManaCost.includes(7) && cmc >= 7) return true;
-                return filterManaCost.includes(cmc);
-            });
+    // Memoize card lookup map separately
+    const cardMap = useMemo(() => {
+        const map = new Map<string, CardOption>();
+        for (const c of cards) {
+            map.set(c.uuid, c);
         }
+        return map;
+    }, [cards]);
 
-        // Filter by colors
-        if (filterColors.length > 0) {
-            result = result.filter((c) => {
-                const colors = c.colors || [];
+    // Step 1: Filter cards
+    const { result: filteredCards, idsToFlip } = useMemo(() => {
+        const result: CardOption[] = [];
+        const idsToFlip: { uuid: string, targetState: boolean }[] = [];
+        const processedUuids = new Set<string>();
 
-                // Handle Colorless special case
-                if (filterColors.includes("C") && colors.length === 0) return true;
+        const criteria: FilterCriteria = {
+            manaCost: filterManaCost,
+            colors: filterColors,
+            types: filterTypes,
+            categories: filterCategories,
+            matchType: filterMatchType
+        };
 
-                if (filterMatchType === "exact") {
-                    const wantsMulticolor = filterColors.includes("M");
-                    const wantsColorless = filterColors.includes("C");
-                    const selectedSpecificColors = filterColors.filter(col => col !== "M" && col !== "C");
+        for (const c of cards) {
+            // Skip linked back faces to avoid duplicates
+            if (c.linkedFrontId && cardMap.has(c.linkedFrontId)) {
+                continue;
+            }
+            if (processedUuids.has(c.uuid)) continue;
 
-                    if (wantsMulticolor && selectedSpecificColors.length === 0 && !wantsColorless) {
-                        return colors.length > 1;
-                    }
-                    if (wantsColorless && selectedSpecificColors.length === 0 && !wantsMulticolor) {
-                        return colors.length === 0;
-                    }
+            // 1. Filter by deck categories
+            if (criteria.categories.length > 0) {
+                if (!c.category || !criteria.categories.includes(c.category)) continue;
+            }
 
-                    if (selectedSpecificColors.length > 0) {
-                        if (colors.length !== selectedSpecificColors.length) return false;
-                        return selectedSpecificColors.every(col => colors.includes(col));
-                    }
+            // 2. Filter by Dual Faced pseudo-type
+            const otherTypes = criteria.types.filter(t => t !== "Dual Faced");
+            const dfcIsStrictRequirement = criteria.types.includes("Dual Faced") &&
+                (criteria.matchType === "exact" || otherTypes.length === 0);
 
-                    return false;
-                } else {
-                    if (filterColors.includes("M") && colors.length > 1) return true;
-                    if (filterColors.includes("C") && colors.length === 0) return true;
-
-                    const specificFilters = filterColors.filter(c => c !== "M" && c !== "C");
-                    if (specificFilters.length === 0) return false;
-
-                    return colors.some((col) => specificFilters.includes(col));
+            if (dfcIsStrictRequirement) {
+                if (!c.linkedFrontId && !c.linkedBackId) continue;
+                if (c.linkedBackId) {
+                    const back = cardMap.get(c.linkedBackId);
+                    if (back && back.imageId && isCardbackId(back.imageId)) continue;
                 }
-            });
+            }
+
+            // 3. Filter by mana cost
+            if (criteria.manaCost.length > 0) {
+                const cmc = c.cmc ?? 0;
+                const match = criteria.manaCost.includes(7) && cmc >= 7 ? true : criteria.manaCost.includes(cmc);
+                if (!match) continue;
+            }
+
+            // --- DFC Logic: Resolve Visible vs Hidden Face ---
+            let visibleFace = c;
+            let hiddenFace: CardOption | undefined = undefined;
+
+            const isFlipped = flippedCardsSet.has(c.uuid);
+
+            if (isFlipped && c.linkedBackId && cardMap.has(c.linkedBackId)) {
+                visibleFace = cardMap.get(c.linkedBackId)!;
+                hiddenFace = c;
+            } else if (!isFlipped && c.linkedBackId && cardMap.has(c.linkedBackId)) {
+                visibleFace = c;
+                hiddenFace = cardMap.get(c.linkedBackId);
+            } else if (c.linkedFrontId && cardMap.has(c.linkedFrontId)) {
+                visibleFace = c;
+                hiddenFace = cardMap.get(c.linkedFrontId);
+            }
+
+            // 1. Check Visible Face
+            if (matchesFilters(visibleFace, criteria)) {
+                result.push(c);
+                processedUuids.add(c.uuid);
+                continue;
+            }
+
+            // 2. Check Hidden Face
+            if (hiddenFace && matchesFilters(hiddenFace, criteria)) {
+                idsToFlip.push({ uuid: c.uuid, targetState: !isFlipped });
+                result.push(c);
+                processedUuids.add(c.uuid);
+                continue;
+            }
+
+            // 3. Check Union
+            if (hiddenFace && matchesFilters(visibleFace, criteria, hiddenFace)) {
+                result.push(c);
+                processedUuids.add(c.uuid);
+                continue;
+            }
         }
 
-        return result;
-    }, [cards, filterManaCost, filterColors, filterMatchType]);
+        return { result, idsToFlip };
+    }, [cards, cardMap, filterManaCost, filterColors, filterTypes, filterCategories, filterMatchType, flippedCardsSet]);
 
-    // Step 2: Sort filtered cards (separate memo - only reruns when sort settings or filtered cards change)
+    // Step 2: Sort filtered cards
     const filteredAndSortedCards = useMemo(() => {
         if (filteredCards.length === 0) return filteredCards;
-
-
-
-        // If manual sort, just return filtered cards (preserves array order from drag)
-        // But respect the sortOrder (asc/desc)
-        if (sortBy === "manual") {
-            return sortOrder === "desc" ? [...filteredCards].reverse() : filteredCards;
-        }
-        // Create a copy for sorting
-        const result = [...filteredCards];
-
-        result.sort((a, b) => {
-            let comparison = 0;
-            switch (sortBy) {
-                case "name":
-                    comparison = extractCardInfo(a.name).name.localeCompare(extractCardInfo(b.name).name);
-                    break;
-                case "type":
-                    comparison = getSortableType(a.type_line).localeCompare(
-                        getSortableType(b.type_line)
-                    );
-                    break;
-                case "cmc":
-                    // Treat undefined/null CMC as 0
-                    comparison = (a.cmc ?? 0) - (b.cmc ?? 0);
-                    break;
-                case "color": {
-                    // Primary Sort: Color (WUBRG order)
-                    const primaryColorA = getPrimaryColor(a.colors);
-                    const primaryColorB = getPrimaryColor(b.colors);
-                    const indexA = COLOR_ORDER.indexOf(primaryColorA);
-                    const indexB = COLOR_ORDER.indexOf(primaryColorB);
-
-                    if (indexA !== indexB) {
-                        return sortOrder === "asc" ? indexA - indexB : indexB - indexA;
-                    }
-
-                    // Secondary Sort: Lands First (within same color)
-                    const isLandA = a.type_line?.toLowerCase().includes("land") || false;
-                    const isLandB = b.type_line?.toLowerCase().includes("land") || false;
-
-                    if (isLandA !== isLandB) {
-                        return sortOrder === "asc"
-                            ? (isLandA ? -1 : 1)
-                            : (isLandB ? -1 : 1);
-                    }
-
-                    // Tertiary Sort: Number of colors (fewer colors first)
-                    const countA = a.colors?.length || 0;
-                    const countB = b.colors?.length || 0;
-                    if (countA !== countB) {
-                        return sortOrder === "asc" ? countA - countB : countB - countA;
-                    }
-
-                    // Quaternary Sort: Canonical WUBRG string
-                    const strA = getWubrgString(a.colors);
-                    const strB = getWubrgString(b.colors);
-                    if (strA !== strB) {
-                        return sortOrder === "asc"
-                            ? strA.localeCompare(strB)
-                            : strB.localeCompare(strA);
-                    }
-
-                    // Fallback to Name
-                    return a.name.localeCompare(b.name);
-                }
-                case "rarity": {
-                    const rA = getRarityValue(a);
-                    const rB = getRarityValue(b);
-                    comparison = rA - rB;
-                    break;
-                }
-                default:
-                    comparison = a.order - b.order;
-                    break;
-            }
-            return sortOrder === "asc" ? comparison : -comparison;
-        });
-
-        return result;
+        return sortCards(filteredCards, { by: sortBy, order: sortOrder });
     }, [filteredCards, sortBy, sortOrder]);
 
     return {
         cards,
-        filteredAndSortedCards
+        filteredAndSortedCards,
+        idsToFlip,
+        // Export helper for UI
+        getCardTypes
     };
 }
+

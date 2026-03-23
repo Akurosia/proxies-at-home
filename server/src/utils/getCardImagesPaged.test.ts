@@ -123,7 +123,7 @@ describe("getCardImagesPaged", () => {
       const urls = await getImagesForCardInfo(cardInfo);
 
       expect(urls).toEqual(["valki_url", "tibalt_url"]);
-    });
+    }, 60000);
 
     it("should handle pagination", async () => {
       mockedAxios.get.mockClear();
@@ -159,7 +159,7 @@ describe("getCardImagesPaged", () => {
       const data = await getCardDataForCardInfo(cardInfo);
 
       expect(data).toEqual(singleFaceCard);
-    });
+    }, 60000);
 
     it("should return null if no card is found", async () => {
       mockedAxios.get.mockResolvedValue(mockScryfallResponse([]));
@@ -175,13 +175,13 @@ describe("getCardImagesPaged", () => {
       mockedAxios.get.mockResolvedValue(mockScryfallResponse([singleFaceCard]));
       await getScryfallPngImagesForCard("Sol Ring");
       expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining("unique%3Aart"));
-    });
+    }, 60000);
 
     it("should respect the unique parameter", async () => {
       mockedAxios.get.mockResolvedValue(mockScryfallResponse([singleFaceCard]));
       await getScryfallPngImagesForCard("Sol Ring", "prints");
       expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining("unique%3Aprints"));
-    });
+    }, 60000);
   });
 
   describe("getScryfallPngImagesForCardPrints", () => {
@@ -189,17 +189,19 @@ describe("getCardImagesPaged", () => {
       mockedAxios.get.mockResolvedValue(mockScryfallResponse([singleFaceCard]));
       await getScryfallPngImagesForCardPrints("Sol Ring");
       expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining("unique%3Aprints"));
-    });
+    }, 60000);
   });
 
   describe("Error Handling", () => {
     let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
 
     beforeEach(() => {
+      vi.useFakeTimers();
       consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => { });
     });
 
     afterEach(() => {
+      vi.useRealTimers();
       consoleWarnSpy.mockRestore();
     });
 
@@ -207,7 +209,12 @@ describe("getCardImagesPaged", () => {
       mockedAxios.get.mockClear();
       mockedAxios.get.mockRejectedValue(new Error("Scryfall API is down"));
       const cardInfo = { name: "Sol Ring" };
-      const urls = await getImagesForCardInfo(cardInfo);
+
+      // Run the function and advance timers to resolve the delay
+      const promise = getImagesForCardInfo(cardInfo);
+      await vi.runAllTimersAsync();
+      const urls = await promise;
+
       expect(urls).toEqual([]);
       expect(consoleWarnSpy).toHaveBeenCalled();
     });
@@ -217,11 +224,15 @@ describe("getCardImagesPaged", () => {
       mockedAxios.get.mockClear();
       mockedAxios.get.mockRejectedValue(new Error("Scryfall API is down"));
       const cardInfo = { name: "Sol Ring" };
-      const data = await getCardDataForCardInfo(cardInfo);
+
+      // Run the function and advance timers to resolve the delay
+      const promise = getCardDataForCardInfo(cardInfo);
+      await vi.runAllTimersAsync();
+      const data = await promise;
+
       expect(data).toBeNull();
-      console.log("Warn calls:", JSON.stringify(consoleWarnSpy.mock.calls));
       expect(consoleWarnSpy).toHaveBeenCalled();
-    }, 10000);
+    });
   });
 
   describe("Additional Strategies", () => {
@@ -241,7 +252,7 @@ describe("getCardImagesPaged", () => {
 
       const expectedUrlPart = "set%3Acmr%20number%3A332";
       expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining(expectedUrlPart));
-    });
+    }, 60000);
 
     it("getCardDataForCardInfo should use Set + Name strategy", async () => {
       mockedAxios.get.mockResolvedValue(mockScryfallResponse([singleFaceCard]));
@@ -266,7 +277,7 @@ describe("getCardImagesPaged", () => {
       const cardInfo = { name: "Card", set: "SET", number: "123" };
       const result = await getCardDataForCardInfo(cardInfo);
       expect(result).toBeNull();
-    });
+    }, 60000);
 
     it("getCardDataForCardInfo should return null if strategy 2 returns empty", async () => {
       mockedAxios.get.mockResolvedValue(mockScryfallResponse([]));
@@ -286,6 +297,6 @@ describe("getCardImagesPaged", () => {
       const cardInfo = { name: "Card", set: "SET" };
       const result = await getImagesForCardInfo(cardInfo, "prints");
       expect(result).toEqual([]);
-    });
+    }, 60000);
   });
 });

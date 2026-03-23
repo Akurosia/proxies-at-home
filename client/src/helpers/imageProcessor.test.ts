@@ -74,7 +74,7 @@ describe("ImageProcessor", () => {
         p.catch(() => { });
     });
 
-    it("should cancel queued tasks and keep workers alive", async () => {
+    it("should cancel queued tasks and terminate workers", async () => {
         const instance = ImageProcessor.getInstance();
 
         // Create 8 tasks to fill the pool
@@ -94,15 +94,11 @@ describe("ImageProcessor", () => {
         // Expect queued promise to reject
         await expect(queuedPromise).rejects.toThrow("Cancelled");
 
-        // Expect active workers to remain alive
-        // @ts-expect-error: Accessing private member
-        expect(instance.allWorkers.size).toBe(8);
+        // active promises should also be rejected or handled, but we focus on state here
 
-        // Verify terminate was not called on any worker
+        // Expect workers to be cleared
         // @ts-expect-error: Accessing private member
-        instance.allWorkers.forEach((worker: Worker) => {
-            expect(worker.terminate).not.toHaveBeenCalled();
-        });
+        expect(instance.allWorkers.size).toBe(0);
     });
 
     it("should use hardwareConcurrency - 1 if less than cap", () => {
@@ -191,5 +187,44 @@ describe("ImageProcessor", () => {
 
         // The first promise should have been rejected with "Promoted..."
         await expect(p1).rejects.toThrow("Promoted to high priority");
+    });
+
+    it("should reject when queue exceeds MAX_QUEUE_SIZE", async () => {
+        const instance = ImageProcessor.getInstance();
+
+
+        // Fill queue to limit (need to account for active workers + queue)
+        // MAX_QUEUE_SIZE is 200, active workers max 8.
+        // So we need > 208 tasks to trigger rejection.
+        for (let i = 0; i < 250; i++) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const p = instance.process({ uuid: `fill-queue-${i}` } as any);
+            p.catch(() => { });
+        }
+
+        // Try to add one more
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const overflow = instance.process({ uuid: "overflow" } as any);
+        await expect(overflow).rejects.toThrow("Processing queue full");
+    });
+
+    it("should call activity callback", async () => {
+        const instance = ImageProcessor.getInstance();
+        const callback = vi.fn();
+        const unsubscribe = instance.onActivityChange(callback);
+
+        // Start a task
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = instance.process({ uuid: "activity-test" } as any);
+        p.catch(() => { });
+
+        expect(callback).toHaveBeenCalledWith(true);
+
+        // Finish task (mock worker message)
+        // Access private worker logic via any cast if necessary or verify state change
+        // Since we can't easily trigger the worker response in this mock setup without deeper hooks,
+        // we'll verify the listener was registered and called on start.
+
+        unsubscribe();
     });
 });

@@ -3,19 +3,26 @@ type IdleWorker = {
   timeoutId: ReturnType<typeof setTimeout> | null;
 };
 
+import { CONSTANTS } from '@/constants/commonConstants';
+import { debugLog } from './debug';
+
+// Maximum total tasks in queue to prevent memory exhaustion on large imports
+const MAX_QUEUE_SIZE = 200;
+
 interface WorkerMessage {
   uuid: string;
   url: string;
   bleedEdgeWidth: number;
   unit: "mm" | "in";
   apiBase: string;
-  isUserUpload: boolean;
-  hasBakedBleed?: boolean;
+  hasBuiltInBleed?: boolean;
+  bleedMode?: 'generate' | 'existing' | 'none';  // Per-card bleed override
+  existingBleedMm?: number;  // Amount when bleedMode is 'existing'
   dpi: number;
-  darkenNearBlack?: boolean;
+  darkenMode?: number;  // 0=none, 1=darken-all, 2=contrast-edges, 3=contrast-full
 }
 
-interface WorkerSuccessResponse {
+export interface WorkerSuccessResponse {
   uuid: string;
   exportBlob: Blob;
   exportDpi: number;
@@ -23,8 +30,22 @@ interface WorkerSuccessResponse {
   displayBlob: Blob;
   displayDpi: number;
   displayBleedWidth: number;
-  exportBlobDarkened: Blob;
-  displayBlobDarkened: Blob;
+  // Per-mode darkened blobs (optional - only generated modes are present)
+  exportBlobDarkenAll?: Blob;
+  displayBlobDarkenAll?: Blob;
+  exportBlobContrastEdges?: Blob;
+  displayBlobContrastEdges?: Blob;
+  exportBlobContrastFull?: Blob;
+  displayBlobContrastFull?: Blob;
+  // Legacy (optional)
+  exportBlobDarkened?: Blob;
+  displayBlobDarkened?: Blob;
+  // For Card Editor live preview (M1.5)
+  baseDisplayBlob: Blob;  // Same as displayBlob - undarkened version for CardCanvas
+  baseExportBlob?: Blob;   // Optional - undarkened export version for CardCanvas
+  imageCacheHit?: boolean; // True if image was served from 7-day persistent cache
+  detectedHasBuiltInBleed?: boolean; // Auto-detected during processing
+  darknessFactor?: number; // Computed histogram darkness (0-1)
   error?: undefined;
 }
 
@@ -45,9 +66,11 @@ export type Priority = (typeof Priority)[keyof typeof Priority];
 interface Task {
   message: WorkerMessage;
   resolve: (value: WorkerResponse) => void;
-  reject: (reason?: ErrorEvent) => void;
+  reject: (reason?: Error | ErrorEvent) => void;
   priority: Priority;
 }
+
+export type ActivityCallback = (isActive: boolean) => void;
 
 export class ImageProcessor {
   static getInstance() {
@@ -65,19 +88,45 @@ export class ImageProcessor {
   private highPriorityQueue: Task[] = [];
   private lowPriorityQueue: Task[] = [];
 
+  // Activity tracking for toast notifications
+  private activeTaskCount = 0;
+  private activityCallbacks: Set<ActivityCallback> = new Set();
+
   // Helper to get all tasks for cancellation
   private get allTasks(): Task[] {
     return [...this.highPriorityQueue, ...this.lowPriorityQueue];
   }
 
   private baseMaxWorkers: number;
-  static mockProcess: unknown;
+
 
   private constructor() {
-    // Cap at 8 workers to prevent network request storms and memory issues
+    // Detect Firefox - it has aggressive WebGL context limits and memory issues
+    const isFirefox = typeof navigator !== 'undefined' && navigator.userAgent.includes('Firefox');
+    const maxWorkers = isFirefox ? CONSTANTS.MAX_WORKERS_FIREFOX : CONSTANTS.MAX_WORKERS;
+
+    // Cap workers based on hardware and browser limits
     const concurrency = navigator.hardwareConcurrency || 4;
-    this.baseMaxWorkers = Math.min(8, Math.max(1, concurrency - 1));
+    this.baseMaxWorkers = Math.min(maxWorkers, Math.max(1, concurrency - 1));
+
+    if (isFirefox) {
+      debugLog(`[ImageProcessor] Firefox detected - limiting to ${this.baseMaxWorkers} workers`);
+    }
+
     ImageProcessor.instances.add(this);
+  }
+
+  /**
+   * Pre-warm workers for faster first-use performance.
+   * Call this on app init to avoid cold-start latency.
+   */
+  prewarm(count: number = CONSTANTS.PREWARM_WORKER_COUNT): void {
+    for (let i = 0; i < Math.min(count, this.baseMaxWorkers); i++) {
+      if (this.allWorkers.size < this.baseMaxWorkers) {
+        const worker = this.createWorker();
+        this.returnWorkerToPool(worker);
+      }
+    }
   }
 
   private createWorker(): Worker {
@@ -86,6 +135,36 @@ export class ImageProcessor {
     });
     this.allWorkers.add(worker);
     return worker;
+  }
+
+  private notifyActivityChange(isActive: boolean) {
+    this.activityCallbacks.forEach(cb => cb(isActive));
+  }
+
+  /**
+   * Register a callback to be notified when processing activity starts/stops.
+   * Returns an unsubscribe function.
+   */
+  onActivityChange(callback: ActivityCallback): () => void {
+    this.activityCallbacks.add(callback);
+    return () => {
+      this.activityCallbacks.delete(callback);
+    };
+  }
+
+  private taskStarted() {
+    const wasIdle = this.activeTaskCount === 0;
+    this.activeTaskCount++;
+    if (wasIdle) {
+      this.notifyActivityChange(true);
+    }
+  }
+
+  private taskCompleted() {
+    this.activeTaskCount = Math.max(0, this.activeTaskCount - 1);
+    if (this.activeTaskCount === 0) {
+      this.notifyActivityChange(false);
+    }
   }
 
   private terminateWorker(worker: Worker) {
@@ -109,7 +188,7 @@ export class ImageProcessor {
   private returnWorkerToPool(worker: Worker) {
     const timeoutId = setTimeout(() => {
       this.terminateWorker(worker);
-    }, 20000); // Terminate after 20 seconds of inactivity
+    }, CONSTANTS.WORKER_IDLE_TIMEOUT_MS); // Terminate after inactivity
 
     this.idleWorkers.push({ worker, timeoutId });
     this.processNextTask();
@@ -143,12 +222,17 @@ export class ImageProcessor {
     if (worker) {
       const currentTask = task; // Capture for closure
 
+      // Track that a task has started processing
+      this.taskStarted();
+
       worker.onmessage = (e: MessageEvent<WorkerResponse>) => {
+        this.taskCompleted();
         this.returnWorkerToPool(worker!);
         currentTask.resolve(e.data);
       };
 
       worker.onerror = (e: ErrorEvent) => {
+        this.taskCompleted();
         console.error("Worker error, terminating:", e);
         this.terminateWorker(worker!);
         currentTask.reject(e);
@@ -168,6 +252,13 @@ export class ImageProcessor {
 
   process(message: WorkerMessage, priority: Priority = Priority.LOW): Promise<WorkerResponse> {
     return new Promise((resolve, reject) => {
+      // Check queue size limit to prevent memory exhaustion
+      const totalQueued = this.highPriorityQueue.length + this.lowPriorityQueue.length;
+      if (totalQueued >= MAX_QUEUE_SIZE) {
+        reject(new Error('Processing queue full, please wait for current tasks to complete'));
+        return;
+      }
+
       const task: Task = { message, resolve, reject, priority };
 
       // Optimization: If promoting to HIGH, remove any pending LOW task for the same UUID
@@ -176,7 +267,7 @@ export class ImageProcessor {
         if (existingLowIndex > -1) {
           const [existingTask] = this.lowPriorityQueue.splice(existingLowIndex, 1);
           // Reject the old task so it doesn't hang
-          existingTask.reject(new Error("Promoted to high priority") as unknown as ErrorEvent);
+          existingTask.reject(new Error("Promoted to high priority"));
         }
       }
 
@@ -201,31 +292,34 @@ export class ImageProcessor {
     }
   }
 
-  destroy() {
-    this.highPriorityQueue = [];
-    this.lowPriorityQueue = [];
+  private terminateAllWorkers() {
     this.idleWorkers.forEach(({ worker, timeoutId }) => {
       if (timeoutId) clearTimeout(timeoutId);
       worker.terminate();
     });
     this.idleWorkers = [];
-    this.allWorkers.forEach((worker) => {
-      worker.terminate();
-    });
+    this.allWorkers.forEach(worker => worker.terminate());
     this.allWorkers.clear();
+  }
+
+  destroy() {
+    this.cancelAll();
     ImageProcessor.instances.delete(this);
   }
 
   cancelAll() {
-    // Reject all pending tasks
-    this.allTasks.forEach((task) => {
+    this.allTasks.forEach(task => {
       task.reject(new Error("Cancelled") as unknown as ErrorEvent);
     });
     this.highPriorityQueue = [];
     this.lowPriorityQueue = [];
 
-    // Do not terminate workers. Let them finish current tasks and return to pool.
-    // They will eventually timeout if not used.
+    if (this.activeTaskCount > 0) {
+      this.activeTaskCount = 0;
+      this.notifyActivityChange(false);
+    }
+
+    this.terminateAllWorkers();
   }
 
   static destroyAll() {

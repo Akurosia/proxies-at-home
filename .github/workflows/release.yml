@@ -1,0 +1,333 @@
+name: Build and Release Electron App
+
+on:
+  push:
+    branches:
+      - main
+      - 'release/v*'
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      promote_stable:
+        description: 'Promote current latest to stable'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  # Determine version and release type
+  prepare:
+    if: github.repository == 'kclipsto/proxies-at-home'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      should_release: ${{ steps.version.outputs.should_release }}
+      update_stable: ${{ steps.version.outputs.update_stable }}
+      is_promote_only: ${{ steps.version.outputs.is_promote_only }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract PR body for tag scanning
+        id: pr_body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%s)
+          PR_NUMBER=$(echo "$COMMIT_MSG" | grep -oP '\(#\K[0-9]+(?=\))' || true)
+          if [ -n "$PR_NUMBER" ]; then
+            echo "Found PR #$PR_NUMBER, fetching body..."
+            PR_BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null || echo "")
+            echo "pr_body<<EOF" >> $GITHUB_OUTPUT
+            echo "$PR_BODY" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Determine version and bump type
+        id: version
+        env:
+          INPUT_PROMOTE_STABLE: ${{ github.event.inputs.promote_stable }}
+          PR_BODY: ${{ steps.pr_body.outputs.pr_body }}
+        run: ./scripts/determine-version.sh
+
+  # Build first (Validation)
+  build:
+    needs: [prepare]
+    if: always() && needs.prepare.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: mac
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install client dependencies
+        run: npm ci --prefix client
+
+      - name: Install server dependencies
+        run: npm ci --prefix server
+
+      - name: Build client
+        run: npm run build --prefix client
+
+      - name: Build server
+        run: npm run build --prefix server
+
+      - name: Compile Electron TypeScript
+        run: npx tsc -p electron/tsconfig.json
+
+      # Handle better-sqlite3 native module for Windows
+      - name: Install Windows prebuild for better-sqlite3
+        if: matrix.platform == 'win'
+        run: |
+          cd server/node_modules/better-sqlite3
+          ELECTRON_VERSION=$(jq -r '.devDependencies.electron' ../../../package.json | sed 's/\^//')
+          echo "Using Electron version: $ELECTRON_VERSION"
+          npx prebuild-install --platform win32 --arch x64 --runtime electron --target $ELECTRON_VERSION
+        shell: bash
+
+      # Build Electron app
+      - name: Build Electron (Windows)
+        if: matrix.platform == 'win'
+        run: npx electron-builder --win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Electron (Linux)
+        if: matrix.platform == 'linux'
+        run: npx electron-builder --linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Electron (Mac)
+        if: matrix.platform == 'mac'
+        run: npx electron-builder --mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Upload artifacts for release job
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxxied-setup-${{ matrix.platform }}
+          path: |
+            dist-app/*.exe
+            dist-app/*.AppImage
+            dist-app/*.deb
+            dist-app/*.dmg
+            dist-app/*.zip
+            dist-app/*.blockmap
+            dist-app/latest*.yml
+          if-no-files-found: ignore
+
+  # Update version and create RELEASE BRANCH (only for main branch pushes)
+  update-version:
+    needs: [prepare, build]
+    # Run only on main, if release is needed, and build succeeded
+    if: "needs.prepare.outputs.should_release == 'true' && github.ref == 'refs/heads/main' && needs.build.result == 'success'"
+    runs-on: ubuntu-latest
+    outputs:
+      release_notes: ${{ steps.changelog.outputs.notes }}
+      version: ${{ needs.prepare.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Update package.json version
+        run: |
+          NEW_VERSION="${{ needs.prepare.outputs.version }}"
+          jq --arg v "$NEW_VERSION" '.version = $v' package.json > package.json.tmp
+          mv package.json.tmp package.json
+          echo "Updated version to $NEW_VERSION"
+
+      - name: Get commits since last tag
+        id: commits
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            COMMITS=$(git log --oneline "$LAST_TAG"..HEAD --no-merges | head -30)
+          else
+            COMMITS=$(git log --oneline -30 --no-merges)
+          fi
+          # Escape for multiline output
+          echo "commits<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        id: changelog
+        run: |
+          COMMITS="${{ steps.commits.outputs.commits }}"
+          
+          NOTES=$(printf "### Changes\n\n%s" "$(echo "$COMMITS" | sed 's/^/- /')")
+          
+          {
+            echo "notes<<EOF"
+            echo "$NOTES"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Update CHANGELOG.md
+        run: |
+          NEW_VERSION="${{ needs.prepare.outputs.version }}"
+          TODAY=$(date +%Y-%m-%d)
+          NOTES="${{ steps.changelog.outputs.notes }}"
+          
+          ENTRY=$(printf "## [%s] - %s\n\n%s\n\n" "$NEW_VERSION" "$TODAY" "$NOTES")
+          
+          if [ -f CHANGELOG.md ]; then
+            printf "%s%s" "$ENTRY" "$(cat CHANGELOG.md)" > CHANGELOG.md
+          else
+            printf "# Changelog\n\n%s" "$ENTRY" > CHANGELOG.md
+          fi
+
+      - name: Create release branch and Push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEW_VERSION="${{ needs.prepare.outputs.version }}"
+          BRANCH_NAME="release/v${NEW_VERSION}"
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Create and checkout release branch
+          git checkout -b "$BRANCH_NAME"
+          
+          # Stage and commit changes
+          git add package.json CHANGELOG.md
+          git commit -m "chore: bump version to ${NEW_VERSION}" || echo "No changes to commit"
+          
+          # Push release branch
+          git push origin "$BRANCH_NAME"
+          
+          echo "release_branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          
+          # Explicitly trigger workflow on new branch
+          # GITHUB_TOKEN pushes do not trigger workflows, so we use gh workflow run
+          echo "Triggering release workflow on $BRANCH_NAME..."
+          gh workflow run release.yml --ref "$BRANCH_NAME"
+
+  # Create Release (runs on release branch OR tags, after build)
+  release:
+    needs: [prepare, build]
+    # Run on release branches or tags, if build success
+    if: "always() && needs.prepare.outputs.should_release == 'true' && needs.build.result == 'success' && (startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/tags/'))"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Rename latest.yml to match channel
+        run: |
+          # latest.yml is the default - copy to stable.yml if needed
+          if [[ "${{ needs.prepare.outputs.update_stable }}" == "true" ]]; then
+            echo "Updating stable.yml"
+            for f in artifacts/latest*.yml; do
+              if [[ -f "$f" ]]; then
+                stable_name=$(echo "$f" | sed 's/latest/stable/')
+                cp "$f" "$stable_name"
+              fi
+            done
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.prepare.outputs.version }}
+          name: v${{ needs.prepare.outputs.version }}
+          files: artifacts/*
+          prerelease: false
+          generate_release_notes: true 
+          target_commitish: ${{ github.ref }} 
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Promote-only job for workflow_dispatch
+  promote-stable:
+    needs: prepare
+    if: needs.prepare.outputs.is_promote_only == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get latest release
+        id: latest
+        run: |
+          LATEST_TAG=$(gh release list --limit 1 --json tagName -q '.[0].tagName')
+          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download latest release artifacts
+        run: |
+          mkdir -p artifacts
+          gh release download ${{ steps.latest.outputs.tag }} -D artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create stable.yml from latest.yml
+        run: |
+          for f in artifacts/latest*.yml; do
+            if [[ -f "$f" ]]; then
+              stable_name=$(echo "$f" | sed 's/latest/stable/')
+              cp "$f" "$stable_name"
+              echo "Created $stable_name from $f"
+            fi
+          done
+
+      - name: Update release with stable.yml
+        run: |
+          gh release upload ${{ steps.latest.outputs.tag }} artifacts/stable*.yml --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: echo "Promoted ${{ steps.latest.outputs.tag }} to stable channel"
